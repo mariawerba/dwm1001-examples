@@ -76,6 +76,7 @@ TaskHandle_t  ss_initiator_task_handle;   /**< Reference to SS TWR Initiator Fre
 extern void ss_initiator_task_function (void * pvParameter);
 TaskHandle_t  led_toggle_task_handle;   /**< Reference to LED0 toggling FreeRTOS task. */
 TimerHandle_t led_toggle_timer_handle;  /**< Reference to LED1 toggling FreeRTOS timer. */
+TaskHandle_t process_uart_rx_handle;
 #endif
 
 #ifdef USE_FREERTOS
@@ -105,12 +106,25 @@ static void led_toggle_timer_callback (void * pvParameter)
   UNUSED_PARAMETER(pvParameter);
   LEDS_INVERT(BSP_LED_1_MASK);
 }
+
+static void process_uart_rx_function (void * pvParameter)
+{
+  UNUSED_PARAMETER(pvParameter);
+  while(true)
+  {
+    if ( deca_uart_rx_data_ready() )
+    {
+      process_uartmsg();
+    }
+    printf("in tha uart \r\n");
+    vTaskDelay(TASK_DELAY);
+  }
+}
 #else
 
   extern int ss_init_run(void);
 
 #endif   // #ifdef USE_FREERTOS
-
 
 
 
@@ -123,6 +137,7 @@ int main(void)
   #ifdef USE_FREERTOS
     /* Create task for LED0 blinking with priority set to 2 */
     UNUSED_VARIABLE(xTaskCreate(led_toggle_task_function, "LED0", configMINIMAL_STACK_SIZE + 200, NULL, 2, &led_toggle_task_handle));
+    UNUSED_VARIABLE(xTaskCreate(process_uart_rx_function, "UART", configMINIMAL_STACK_SIZE + 500, NULL, 3, &process_uart_rx_handle));
 
     /* Start timer for LED1 blinking */
     led_toggle_timer_handle = xTimerCreate( "LED1", TIMER_PERIOD, pdTRUE, NULL, led_toggle_timer_callback);
@@ -179,11 +194,14 @@ int main(void)
   dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
   dwt_setrxtimeout(65000); // Maximum value timeout with DW1000 is 65ms  
 
+  printf("unique part id: %d \r\n", dwt_getpartid());
+
   //-------------dw1000  ini------end---------------------------	
   // IF WE GET HERE THEN THE LEDS WILL BLINK
 
   #ifdef USE_FREERTOS		
     /* Start FreeRTOS scheduler. */
+    printf("Beginning FreeRTOS...\r\n");
     vTaskStartScheduler();	
       while(1)
       {};

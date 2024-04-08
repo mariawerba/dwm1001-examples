@@ -8,3 +8,5 @@
 
 bool boUART_Init	(void);
 bool boUART_getc	(uint8_t *u8ch);
+
+void process_uartmsg(void);
