@@ -25,6 +25,7 @@
 #include "nordic_common.h"
 #include "nrf_drv_clock.h"
 #include "nrf_drv_spi.h"
+#include "nrf_uart.h"
 #include "app_util_platform.h"
 #include "nrf_gpio.h"
 #include "nrf_delay.h"
@@ -32,12 +33,12 @@
 #include "nrf.h"
 #include "app_error.h"
 #include <string.h>
-
 #include "port_platform.h"
 #include "deca_types.h"
 #include "deca_param_types.h"
 #include "deca_regs.h"
 #include "deca_device_api.h"
+#include "UART.h"
 
 // Defines ---------------------------------------------
 
@@ -103,6 +104,7 @@ static dwt_config_t config = {
 
 #endif  // #ifdef USE_FREERTOS
 
+
 int main(void)
 {
   /* Setup some LEDs for debug Green and Blue on DWM1001-DEV */
@@ -122,6 +124,8 @@ int main(void)
   #endif  // #ifdef USE_FREERTOS
 
   //-------------dw1000  ini------------------------------------	
+  boUART_Init ();
+  printf("hello Maria");
 
   /* Setup DW1000 IRQ pin */
   nrf_gpio_cfg_input(DW1000_IRQ, NRF_GPIO_PIN_NOPULL); 		//irq
@@ -173,6 +177,39 @@ int main(void)
     }
     #endif  // #ifdef USE_FREERTOS
 }
+
+// /*DWM1000 interrupt initialization and handler definition*/
+
+// /*!
+// * Interrupt handler calls the DW1000 ISR API. Call back corresponding to each event defined in ss_init_main
+// */
+// void vInterruptHandler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
+// {
+//   dwt_isr(); // DW1000 interrupt service routine 
+// }
+
+// /*!
+// * @brief Configure an IO pin as a positive edge triggered interrupt source.
+// */
+// void vInterruptInit (void)
+// {
+//   ret_code_t err_code;
+
+//   if (nrf_drv_gpiote_is_init())
+//     printf("nrf_drv_gpiote_init already installed\n");
+//   else
+//     nrf_drv_gpiote_init();
+
+//   // input pin, +ve edge interrupt, no pull-up
+//   nrf_drv_gpiote_in_config_t in_config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+//   in_config.pull = NRF_GPIO_PIN_NOPULL;
+
+//   // Link this pin interrupt source to its interrupt handler
+//   err_code = nrf_drv_gpiote_in_init(DW1000_IRQ, &in_config, vInterruptHandler);
+//   APP_ERROR_CHECK(err_code);
+
+//   nrf_drv_gpiote_in_event_enable(DW1000_IRQ, true);
+// }
 
 /*****************************************************************************************************************************************************
 * NOTES:

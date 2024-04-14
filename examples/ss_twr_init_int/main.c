@@ -26,7 +26,6 @@
 #include "nrf_log.h"
 #include "nrf.h"
 #include "app_error.h"
-#include "app_util_platform.h"
 #include "app_error.h"
 #include <string.h>
 #include "port_platform.h"
@@ -137,7 +136,7 @@ int main(void)
   #ifdef USE_FREERTOS
     /* Create task for LED0 blinking with priority set to 2 */
     UNUSED_VARIABLE(xTaskCreate(led_toggle_task_function, "LED0", configMINIMAL_STACK_SIZE + 200, NULL, 2, &led_toggle_task_handle));
-    UNUSED_VARIABLE(xTaskCreate(process_uart_rx_function, "UART", configMINIMAL_STACK_SIZE + 500, NULL, 3, &process_uart_rx_handle));
+    //UNUSED_VARIABLE(xTaskCreate(process_uart_rx_function, "UART", configMINIMAL_STACK_SIZE + 500, NULL, 3, &process_uart_rx_handle));
 
     /* Start timer for LED1 blinking */
     led_toggle_timer_handle = xTimerCreate( "LED1", TIMER_PERIOD, pdTRUE, NULL, led_toggle_timer_callback);

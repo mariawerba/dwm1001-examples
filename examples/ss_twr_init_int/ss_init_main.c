@@ -27,8 +27,10 @@
 #include "deca_regs.h"
 #include "port_platform.h"
 #include "ss_init_main.h"
+#include "msg_types.h"
 
 #define APP_NAME "SS TWR INIT v1.3"
+
 
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 250
@@ -96,6 +98,7 @@ int ss_init_run(void)
 
   /* Write frame data to DW1000 and prepare transmission. See NOTE 3 below. */
   tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+  dwt_msg_t test;
   dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
   dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
 
@@ -251,6 +254,7 @@ void tx_conf_cb(const dwt_cb_data_t *cb_data)
   * dwt_setcallbacks(). The ISR will not call it which will allow to save some interrupt processing time. */
 
   tx_int_flag = 1 ;
+  printf("i tx'ed\n\r");
   /* TESTING BREAKPOINT LOCATION #4 */
 }
 
