@@ -39,6 +39,8 @@
 #include "deca_regs.h"
 #include "deca_device_api.h"
 #include "UART.h"
+#include "ss_resp_main.h"
+#include "nrf_drv_gpiote.h"
 
 // Defines ---------------------------------------------
 
@@ -113,22 +115,27 @@ int main(void)
 
   #ifdef USE_FREERTOS
     /* Create task for LED0 blinking with priority set to 2 */
-    UNUSED_VARIABLE(xTaskCreate(led_toggle_task_function, "LED0", configMINIMAL_STACK_SIZE + 200, NULL, 2, &led_toggle_task_handle));
+    //UNUSED_VARIABLE(xTaskCreate(led_toggle_task_function, "LED0", configMINIMAL_STACK_SIZE + 200, NULL, 2, &led_toggle_task_handle));
 
     /* Start timer for LED1 blinking */
     led_toggle_timer_handle = xTimerCreate( "LED1", TIMER_PERIOD, pdTRUE, NULL, led_toggle_timer_callback);
-    UNUSED_VARIABLE(xTimerStart(led_toggle_timer_handle, 0));
+    //UNUSED_VARIABLE(xTimerStart(led_toggle_timer_handle, 0));
 
     /* Create task for SS TWR Initiator set to 2 */
-    UNUSED_VARIABLE(xTaskCreate(ss_responder_task_function, "SSTWR_RESP", configMINIMAL_STACK_SIZE + 200, NULL, 2, &ss_responder_task_handle)); 
+    //commenting this out because I only want the responder to respond when spoken to
+    //UNUSED_VARIABLE(xTaskCreate(ss_responder_task_function, "SSTWR_RESP", configMINIMAL_STACK_SIZE + 200, NULL, 2, &ss_responder_task_handle)); 
   #endif  // #ifdef USE_FREERTOS
 
   //-------------dw1000  ini------------------------------------	
-  boUART_Init ();
-  printf("hello Maria");
 
-  /* Setup DW1000 IRQ pin */
-  nrf_gpio_cfg_input(DW1000_IRQ, NRF_GPIO_PIN_NOPULL); 		//irq
+  // /* Setup DW1000 IRQ pin */
+  // nrf_gpio_cfg_input(DW1000_IRQ, NRF_GPIO_PIN_NOPULL); 		//irq
+
+  /* Setup NRF52832 interrupt on GPIO 25 : connected to DW1000 IRQ*/
+  vInterruptInit(); //changing to this interrupt initialization instead
+
+  boUART_Init ();
+  printf("Maria's Modified Responder Example\r\n");
 
   /* Reset DW1000 */
   reset_DW1000(); 
@@ -150,20 +157,27 @@ int main(void)
   /* Configure DW1000. */
   dwt_configure(&config);
 
+  /* Initialization of the DW1000 interrupt*/
+  /* Callback are defined in ss_init_main.c */
+  dwt_setcallbacks(NULL, &rx_ok_cb, &rx_to_cb, &rx_err_cb);
+
+  /* Enable wanted interrupts (TX confirmation, RX good frames, RX timeouts and RX errors). */
+  dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RXPTO | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
+
   /* Apply default antenna delay value. Defined in port platform.h */
   dwt_setrxantennadelay(RX_ANT_DLY);
   dwt_settxantennadelay(TX_ANT_DLY);
 
   /* Set preamble timeout for expected frames.  */
   //dwt_setpreambledetecttimeout(PRE_TIMEOUT);
-
-  dwt_setrxtimeout(0);    // set to NO receive timeout for this simple example   
+  dwt_setrxtimeout(0);    // set to NO receive timeout for this simple example
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);   
 
   //-------------dw1000  ini------end---------------------------	
-
   // IF WE GET HERE THEN THE LEDS WILL BLINK
   #ifdef USE_FREERTOS
     /* Start FreeRTOS scheduler. */
+    printf("Beginning FreeRTOS...\r\n");
     vTaskStartScheduler();	
 
     while(1)
@@ -178,38 +192,38 @@ int main(void)
     #endif  // #ifdef USE_FREERTOS
 }
 
-// /*DWM1000 interrupt initialization and handler definition*/
+/*DWM1000 interrupt initialization and handler definition*/
 
-// /*!
-// * Interrupt handler calls the DW1000 ISR API. Call back corresponding to each event defined in ss_init_main
-// */
-// void vInterruptHandler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
-// {
-//   dwt_isr(); // DW1000 interrupt service routine 
-// }
+/*!
+* Interrupt handler calls the DW1000 ISR API. Call back corresponding to each event defined in ss_init_main
+*/
+void vInterruptHandler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action)
+{
+  dwt_isr(); // DW1000 interrupt service routine 
+}
 
-// /*!
-// * @brief Configure an IO pin as a positive edge triggered interrupt source.
-// */
-// void vInterruptInit (void)
-// {
-//   ret_code_t err_code;
+/*!
+* @brief Configure an IO pin as a positive edge triggered interrupt source.
+*/
+void vInterruptInit (void)
+{
+  ret_code_t err_code;
 
-//   if (nrf_drv_gpiote_is_init())
-//     printf("nrf_drv_gpiote_init already installed\n");
-//   else
-//     nrf_drv_gpiote_init();
+  if (nrf_drv_gpiote_is_init())
+    printf("nrf_drv_gpiote_init already installed\n");
+  else
+    nrf_drv_gpiote_init();
 
-//   // input pin, +ve edge interrupt, no pull-up
-//   nrf_drv_gpiote_in_config_t in_config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
-//   in_config.pull = NRF_GPIO_PIN_NOPULL;
+  // input pin, +ve edge interrupt, no pull-up
+  nrf_drv_gpiote_in_config_t in_config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+  in_config.pull = NRF_GPIO_PIN_NOPULL;
 
-//   // Link this pin interrupt source to its interrupt handler
-//   err_code = nrf_drv_gpiote_in_init(DW1000_IRQ, &in_config, vInterruptHandler);
-//   APP_ERROR_CHECK(err_code);
+  // Link this pin interrupt source to its interrupt handler
+  err_code = nrf_drv_gpiote_in_init(DW1000_IRQ, &in_config, vInterruptHandler);
+  APP_ERROR_CHECK(err_code);
 
-//   nrf_drv_gpiote_in_event_enable(DW1000_IRQ, true);
-// }
+  nrf_drv_gpiote_in_event_enable(DW1000_IRQ, true);
+}
 
 /*****************************************************************************************************************************************************
 * NOTES:

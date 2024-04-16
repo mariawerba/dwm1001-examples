@@ -38,13 +38,16 @@
 /* Frames used in the ranging process. See NOTE 1,2 below. */
 static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0};
 static uint8 rx_resp_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'V', 'E', 'W', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
 /* Length of the common part of the message (up to and including the function code, see NOTE 1 below). */
 #define ALL_MSG_COMMON_LEN 10
+
 /* Indexes to access some of the fields in the frames defined above. */
 #define ALL_MSG_SN_IDX 2
 #define RESP_MSG_POLL_RX_TS_IDX 10
 #define RESP_MSG_RESP_TX_TS_IDX 14
 #define RESP_MSG_TS_LEN 4
+
 /* Frame sequence number, incremented after each transmission. */
 static uint8 frame_seq_nb = 0;
 
@@ -202,6 +205,7 @@ void rx_ok_cb(const dwt_cb_data_t *cb_data)
 {
   rx_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #1 */
+  printf("i rx'ed\n\r");
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -254,8 +258,8 @@ void tx_conf_cb(const dwt_cb_data_t *cb_data)
   * dwt_setcallbacks(). The ISR will not call it which will allow to save some interrupt processing time. */
 
   tx_int_flag = 1 ;
-  printf("i tx'ed\n\r");
   /* TESTING BREAKPOINT LOCATION #4 */
+  printf("i tx'ed\n\r");
 }
 
 
