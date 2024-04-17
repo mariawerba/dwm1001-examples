@@ -83,6 +83,16 @@ typedef unsigned long long uint64;
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 
+/*Interrupt flag*/
+static volatile int tx_int_flag = 0 ; // Transmit success interrupt flag
+static volatile int rx_int_flag = 0 ; // Receive success interrupt flag
+static volatile int to_int_flag = 0 ; // Timeout interrupt flag
+static volatile int er_int_flag = 0 ; // Error interrupt flag 
+
+/*Transactions Counters */
+static volatile int tx_count = 0 ; // Successful transmit counter
+static volatile int rx_count = 0 ; // Successful receive counter 
+
 /*! ------------------------------------------------------------------------------------------------------------------
 * @fn main()
 *
@@ -129,7 +139,7 @@ int ss_resp_run(void)
     /* Check that the frame is a poll sent by "SS TWR initiator" example.
     * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
     rx_buffer[ALL_MSG_SN_IDX] = 0;
-    printf(rx_buffer);
+    
     if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0)
     {
       uint32 resp_tx_time;
@@ -220,6 +230,148 @@ static uint64 get_rx_timestamp_u64(void)
     ts |= ts_tab[i];
   }
   return ts;
+}
+
+/*! ------------------------------------------------------------------------------------------------------------------
+* @fn rx_ok_cb()
+*
+* @brief Callback to process RX good frame events
+*
+* @param  cb_data  callback data
+*
+* @return  none
+*/
+void rx_ok_cb(const dwt_cb_data_t *cb_data)
+{
+  rx_int_flag = 1 ;
+  /* TESTING BREAKPOINT LOCATION #1 */
+  dwt_forcetrxoff();
+  //ss_resp_run();
+
+  /* A frame has been received, copy it to our local buffer. See NOTE 6 below. */
+  if (cb_data->datalength <= RX_BUF_LEN)
+  {
+      dwt_readrxdata(rx_buffer, cb_data->datalength, 0);
+  }
+
+  /* Check that the frame is a poll sent by "SS TWR initiator" example.
+  * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
+  rx_buffer[ALL_MSG_SN_IDX] = 0;
+  
+  if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0)
+  {
+    uint32 resp_tx_time;
+    int ret;
+
+    /* Retrieve poll reception timestamp. */
+    poll_rx_ts = get_rx_timestamp_u64();
+
+    /* Compute final message transmission time. See NOTE 7 below. */
+    resp_tx_time = (poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+    dwt_setdelayedtrxtime(resp_tx_time);
+
+    /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
+    resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+
+    /* Write all timestamps in the final message. See NOTE 8 below. */
+    resp_msg_set_ts(&tx_resp_msg[RESP_MSG_POLL_RX_TS_IDX], poll_rx_ts);
+    resp_msg_set_ts(&tx_resp_msg[RESP_MSG_RESP_TX_TS_IDX], resp_tx_ts);
+
+    /* Write and send the response message. See NOTE 9 below. */
+    tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+    dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+    dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+    ret = dwt_starttx(DWT_START_TX_DELAYED);
+
+    //ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+    /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
+    if (ret == DWT_SUCCESS)
+    {
+    /* Poll DW1000 until TX frame sent event set. See NOTE 5 below. */
+    while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS))
+    {};
+
+    /* Clear TXFRS event. */
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+
+    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+    frame_seq_nb++;
+    }
+    else
+    {
+    /* If we end up in here then we have not succeded in transmitting the packet we sent up.
+    POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors. 
+    For slower platforms where the SPI is at a slower speed or the processor is operating at a lower 
+    frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
+    Knowing the exact time when the responder is going to send its response is vital for time of flight 
+    calculation. The specification of the time of respnse must allow the processor enough time to do its 
+    calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
+    */
+
+    /* Reset RX to properly reinitialise LDE operation. */
+    dwt_rxreset();
+    }
+  }
+
+
+
+
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);
+}
+
+/*! ------------------------------------------------------------------------------------------------------------------
+* @fn rx_to_cb()
+*
+* @brief Callback to process RX timeout events
+*
+* @param  cb_data  callback data
+*
+* @return  none
+*/
+void rx_to_cb(const dwt_cb_data_t *cb_data)
+{
+  to_int_flag = 1 ;
+  /* TESTING BREAKPOINT LOCATION #2 */
+  //printf("TimeOut\r\n");
+}
+
+/*! ------------------------------------------------------------------------------------------------------------------
+* @fn rx_err_cb()
+*
+* @brief Callback to process RX error events
+*
+* @param  cb_data  callback data
+*
+* @return  none
+*/
+void rx_err_cb(const dwt_cb_data_t *cb_data)
+{
+  er_int_flag = 1 ;
+  /* TESTING BREAKPOINT LOCATION #3 */
+  //printf("Transmission Error : may receive package from different UWB device\r\n");
+}
+
+/*! ------------------------------------------------------------------------------------------------------------------
+* @fn tx_conf_cb()
+*
+* @brief Callback to process TX confirmation events
+*
+* @param  cb_data  callback data
+*
+* @return  none
+*/
+void tx_conf_cb(const dwt_cb_data_t *cb_data)
+{
+  /* This callback has been defined so that a breakpoint can be put here to check it is correctly called but there is actually nothing specific to
+  * do on transmission confirmation in this example. Typically, we could activate reception for the response here but this is automatically handled
+  * by DW1000 using DWT_RESPONSE_EXPECTED parameter when calling dwt_starttx().
+  * An actual application that would not need this callback could simply not define it and set the corresponding field to NULL when calling
+  * dwt_setcallbacks(). The ISR will not call it which will allow to save some interrupt processing time. */
+
+  tx_int_flag = 1 ;
+  /* TESTING BREAKPOINT LOCATION #4 */
+  //printf("i tx'ed\n\r");
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
