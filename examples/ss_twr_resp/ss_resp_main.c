@@ -245,8 +245,9 @@ void rx_ok_cb(const dwt_cb_data_t *cb_data)
 {
   rx_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #1 */
-  dwt_forcetrxoff();
+  //dwt_forcetrxoff();
   //ss_resp_run();
+  //dwt_rxreset();
 
   /* A frame has been received, copy it to our local buffer. See NOTE 6 below. */
   if (cb_data->datalength <= RX_BUF_LEN)
@@ -316,7 +317,7 @@ void rx_ok_cb(const dwt_cb_data_t *cb_data)
 
 
 
-
+  dwt_rxreset();
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 }
 
@@ -350,6 +351,8 @@ void rx_err_cb(const dwt_cb_data_t *cb_data)
   er_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #3 */
   //printf("Transmission Error : may receive package from different UWB device\r\n");
+  dwt_rxreset();
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -371,7 +374,6 @@ void tx_conf_cb(const dwt_cb_data_t *cb_data)
 
   tx_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #4 */
-  //printf("i tx'ed\n\r");
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
