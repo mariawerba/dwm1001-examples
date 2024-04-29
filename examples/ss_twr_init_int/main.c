@@ -78,6 +78,8 @@ TimerHandle_t led_toggle_timer_handle;  /**< Reference to LED1 toggling FreeRTOS
 TaskHandle_t process_uart_rx_handle;
 #endif
 
+extern void set_src_addr();
+
 #ifdef USE_FREERTOS
 
 /**@brief LED0 task entry function.
@@ -191,9 +193,9 @@ int main(void)
   /* Set expected response's delay and timeout. 
   * As this example only handles one incoming frame with always the same delay and timeout, those values can be set here once for all. */
   dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-  dwt_setrxtimeout(65000); // Maximum value timeout with DW1000 is 65ms  
+  dwt_setrxtimeout(0); // Maximum value timeout with DW1000 is 65ms  
 
-  printf("unique part id: %d \r\n", dwt_getpartid());
+  set_src_addr(); // Sets source address in outgoing messages in ss_init_main.c
 
   //-------------dw1000  ini------end---------------------------	
   // IF WE GET HERE THEN THE LEDS WILL BLINK

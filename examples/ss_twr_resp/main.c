@@ -75,6 +75,8 @@ static dwt_config_t config = {
   extern int ss_resp_run(void);
 #endif    // #ifdef USE_FREERTOS
 
+extern void set_src_addr();
+
 #ifdef USE_FREERTOS
 
   /**@brief LED0 task entry function.
@@ -167,7 +169,9 @@ int main(void)
   /* Set preamble timeout for expected frames.  */
   //dwt_setpreambledetecttimeout(PRE_TIMEOUT);
 
-  dwt_setrxtimeout(0);    // set to NO receive timeout for this simple example   
+  dwt_setrxtimeout(0);    // set to NO receive timeout for this simple example
+
+  set_src_addr();   
 
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 

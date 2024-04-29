@@ -28,3 +28,5 @@ static uint64 get_rx_timestamp_u64(void);
 static void resp_msg_set_ts(uint8 *ts_field, const uint64 ts);
 
 void ss_responder_task_function (void * pvParameter);
+
+void set_src_addr();

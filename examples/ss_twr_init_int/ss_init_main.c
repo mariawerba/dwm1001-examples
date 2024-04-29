@@ -27,16 +27,28 @@
 #include "deca_regs.h"
 #include "port_platform.h"
 #include "ss_init_main.h"
-#include "msg_types.h"
+#include "uwb_messages.h"
 
 #define APP_NAME "SS TWR INIT v1.3"
 
+/* Messaging info */
+static bool joined = FALSE;
+static uint8 fctrl[] = {0x41, 0x88}; //default, means something in IEEE
+static uint8 panid[] = {0xCA, 0xDE}; //default
+static uint8 src_addr[2];
+static uint8 session_id;
+static uint8 cluster_flag;
+static uint8 superframe_num;
+static uint8 seat_num = 0;
+static uint8 seat_map = 0;
+static uint8 init_addr[2];
 
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 250
 
 /* Frames used in the ranging process. See NOTE 1,2 below. */
-static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0};
+//static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0};
+static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 0xff, 0xff, 0xff, 0xff, 0x1, 0, 0};
 static uint8 rx_resp_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'V', 'E', 'W', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 /* Length of the common part of the message (up to and including the function code, see NOTE 1 below). */
@@ -53,7 +65,7 @@ static uint8 frame_seq_nb = 0;
 
 /* Buffer to store received response message.
 * Its size is adjusted to longest frame that this example code is supposed to handle. */
-#define RX_BUF_LEN 20
+#define RX_BUF_LEN 127
 static uint8 rx_buffer[RX_BUF_LEN];
 
 /* Hold copy of status register state here for reference so that it can be examined at a debug breakpoint. */
@@ -72,6 +84,8 @@ static double distance;
 
 /* Declaration of static functions. */
 static void resp_msg_get_ts(uint8 *ts_field, uint32 *ts);
+static void resp_msg_get_rx_ts(beacon_payload_t *tx_payload, uint32 *ts);
+static void resp_msg_get_tx_ts(beacon_payload_t *tx_payload, uint32 *ts);
 
 /*Interrupt flag*/
 static volatile int tx_int_flag = 0 ; // Transmit success interrupt flag
@@ -101,7 +115,6 @@ int ss_init_run(void)
 
   /* Write frame data to DW1000 and prepare transmission. See NOTE 3 below. */
   tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-  dwt_msg_t test;
   dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
   dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
 
@@ -143,7 +156,7 @@ int ss_init_run(void)
     /* Check that the frame is the expected response from the companion "SS TWR responder" example.
     * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
     rx_buffer[ALL_MSG_SN_IDX] = 0;
-    if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
+    if (TRUE)//(memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
     {	
       rx_count++;
       printf("Reception # : %d\r\n",rx_count);
@@ -161,8 +174,25 @@ int ss_init_run(void)
       clockOffsetRatio = dwt_readcarrierintegrator() * (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_5 / 1.0e6) ;
 
       /* Get timestamps embedded in response message. */
-      resp_msg_get_ts(&rx_buffer[RESP_MSG_POLL_RX_TS_IDX], &poll_rx_ts);
-      resp_msg_get_ts(&rx_buffer[RESP_MSG_RESP_TX_TS_IDX], &resp_tx_ts);
+      // resp_msg_get_ts(&rx_buffer[15], &poll_rx_ts);
+      //resp_msg_get_ts(&rx_buffer[19], &resp_tx_ts);
+      message_header_t *rx_header = (message_header_t *) rx_buffer;
+      if (rx_header->msg_type == JOIN_REQ)
+      {
+        join_req_payload_t *rx_payload = (join_req_payload_t *) (rx_buffer + sizeof(*rx_header));
+        uint8 inverted_map = ~seat_map;
+        if ((inverted_map & (rx_payload->seat_num)) == 1)
+        {
+            //send
+        }
+      }
+      else
+      {
+        beacon_payload_t *rx_payload = (beacon_payload_t *) (rx_buffer + sizeof(*rx_header));
+        resp_msg_get_rx_ts(rx_payload, &poll_rx_ts);
+        resp_msg_get_tx_ts(rx_payload, &resp_tx_ts);
+      }
+
 
       /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
       rtd_init = resp_rx_ts - poll_tx_ts;
@@ -283,6 +313,26 @@ static void resp_msg_get_ts(uint8 *ts_field, uint32 *ts)
   }
 }
 
+static void resp_msg_get_rx_ts(beacon_payload_t *tx_payload, uint32 *ts)
+{
+  int i;
+  *ts = 0;
+  for (i = 0; i < RESP_MSG_TS_LEN; i++)
+  {
+    *ts += (uint8)(tx_payload->rx_ts[i]) << (i * 8);
+  }
+}
+
+static void resp_msg_get_tx_ts(beacon_payload_t *tx_payload, uint32 *ts)
+{
+  int i;
+  *ts = 0;
+  for (i = 0; i < RESP_MSG_TS_LEN; i++)
+  {
+    *ts += (uint8)(tx_payload->tx_ts[i]) << (i * 8);
+  }
+}
+
 
 /**@brief SS TWR Initiator task entry function.
 *
@@ -302,6 +352,16 @@ void ss_initiator_task_function (void * pvParameter)
     /* Tasks must be implemented to never return... */
   }
 }
+
+void set_src_addr()
+{
+  uint32 unique_id = dwt_getpartid();
+  for (int i = 0; i < 2; i++)
+  {
+    src_addr[i] = (unique_id >> (i*8)) & 0xFF; //extract lower 16 bits
+  }
+}
+
 /*****************************************************************************************************************************************************
 * NOTES:
 *
