@@ -45,10 +45,3 @@ typedef struct {
     uint8 seat_num;
 } join_conf_payload_t;
 
-
-
-
-typedef struct
-{
-    beacon_payload_t beacon_payload;
-} uwb_message_t;

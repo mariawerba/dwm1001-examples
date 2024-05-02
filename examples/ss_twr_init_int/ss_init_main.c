@@ -40,7 +40,7 @@ static uint8 session_id;
 static uint8 cluster_flag;
 static uint8 superframe_num;
 static uint8 seat_num = 0;
-static uint8 seat_map = 0;
+static uint8 seat_map = 0x0;
 static uint8 init_addr[2];
 
 /* Inter-ranging delay period, in milliseconds. */
@@ -95,8 +95,11 @@ static volatile int er_int_flag = 0 ; // Error interrupt flag
 
 /*Transactions Counters */
 static volatile int tx_count = 0 ; // Successful transmit counter
-static volatile int rx_count = 0 ; // Successful receive counter 
+static volatile int rx_count = 0 ; // Successful receive counter
 
+static uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
+static uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
+static uint8 join_conf_msg[sizeof(message_header_t)+sizeof(join_conf_payload_t)+2] = {0};
 
 /*! ------------------------------------------------------------------------------------------------------------------
 * @fn main()

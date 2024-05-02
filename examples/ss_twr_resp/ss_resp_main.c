@@ -22,6 +22,7 @@
 #include <string.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "timers.h"
 #include "deca_device_api.h"
 #include "deca_regs.h"
 #include "port_platform.h"
@@ -97,11 +98,15 @@ static volatile int er_int_flag = 0 ; // Error interrupt flag
 static volatile int tx_count = 0 ; // Successful transmit counter
 static volatile int rx_count = 0 ; // Successful receive counter
 
-uint8 *create_message(message_type_t msg_type);
-void send_message(uint8 *out_message, uint8 message_size);
+void create_message(message_type_t msg_type);
+void send_timed_message(TimerHandle_t tx_timer);
+void send_message(uint8* out_message, uint8 message_size);
 
 static uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
 static uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
+static uint8 join_conf_msg[sizeof(message_header_t)+sizeof(join_conf_payload_t)+2] = {0};
+
+static TimerHandle_t tx_timer;
 
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -293,9 +298,6 @@ void ss_responder_task_function (void * pvParameter)
 
 void process_packet (uint8 *rx_buf, uint16 rx_data_len)
 {
-  uint8 *beacon;
-  uint8 *join_req;
-  uint8 *join_conf;
   message_header_t *rx_header = (message_header_t *) rx_buf;
 
   switch (rx_header->msg_type)
@@ -314,45 +316,69 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
         seat_map = rx_payload->seat_map;
         init_addr[0] = rx_header->src_addr[0];
         init_addr[1] = rx_header->src_addr[1];
-      }
-      if (joined==TRUE) //if already part of network respond accordingly
-      {
-        //TODO: change this to a delay multiplier?
-        if (rx_seat_num == (seat_num-1))
+
+        if (joined==TRUE) //if already part of network respond accordingly
         {
-          beacon = create_message(BEACON);
-          send_message(beacon, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
-        }
-      }
-      else //if not part of network make network join request if there is space
-      {
-        uint8 inverted_map = ~(rx_payload->seat_map);
-        if (inverted_map == 0) //all seats are full
-        {
-          return; //have to wait until there is an opening
-        }
-        else
-        {
-          uint8 open_seat = 0;
-          uint8 mask = 0x1;
-          while ((inverted_map & mask) == 0)
-          {
-            mask <<= 1;
-            open_seat++;
+          create_message(BEACON);
+          
+          dwt_writetxdata((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), beacon_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+          dwt_writetxfctrl((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
+          
+          tx_timer = xTimerCreate("tx_timer", pdMS_TO_TICKS(10*(seat_num)), pdTRUE, (void *)0, send_timed_message);
+          if (tx_timer == NULL) {
+              printf("Tx timer creation failed.\r\n");
           }
-          seat_num = open_seat; //set local seat number to lowest open slot
-
-          join_req = create_message(JOIN_REQ);
-          send_message(join_req, (sizeof(message_header_t)+sizeof(join_req_payload_t)+2));
+          
+          BaseType_t result = xTimerStart(tx_timer, 0);
+          if (result != pdPASS) {
+              printf("Tx timer start failed.\r\n");
+          }
+          //send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
         }
+        else //if not part of network make network join request if there is space
+        {
+          uint8 inverted_map = ~(rx_payload->seat_map);
+          if (inverted_map == 0) //all seats are full
+          {
+            return; //have to wait until there is an opening
+          }
+          else
+          {
+            uint8 open_seat = 0;
+            uint8 mask = 0x1;
+            while ((inverted_map & mask) == 0)
+            {
+              mask <<= 1;
+              open_seat++;
+            }
+            seat_num = open_seat; //set local seat number to lowest open slot
 
-        printf("Requesting network join %d.\r\n", inverted_map);
+            create_message(JOIN_REQ);
+
+            dwt_writetxdata((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), beacon_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+            dwt_writetxfctrl((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
+            
+            tx_timer = xTimerCreate("tx_timer", pdMS_TO_TICKS(100), pdTRUE, (void *)0, send_timed_message);
+            if (tx_timer == NULL) {
+                printf("Tx timer creation failed.\r\n");
+            }
+            
+            BaseType_t result = xTimerStart(tx_timer, 0);
+            if (result != pdPASS) {
+                printf("Tx timer start failed.\r\n");
+            }
+            //send_message(join_req_msg, (sizeof(message_header_t)+sizeof(join_req_payload_t)+2));
+          }
+
+          printf("Requesting network join %d.\r\n", inverted_map);
+        }
       }
+      
       break;
     case (1):
       printf("just checking \r\n");
-      beacon = create_message(BEACON);
-      send_message(beacon, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
+      create_message(BEACON);
+      send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
       break;
     case (JOIN_CONF):
       //insert join conf process here
@@ -363,7 +389,7 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
   }
 }
 
-uint8 *create_message(message_type_t msg_type)
+void create_message(message_type_t msg_type)
 {
   message_header_t tx_msg_hdr = {
     fctrl[0], fctrl[1],
@@ -395,7 +421,7 @@ uint8 *create_message(message_type_t msg_type)
       tx_msg_hdr.dest_addr[0] = 0xFF; //beacons are addressed to all transceivers (0xFFFF)
       tx_msg_hdr.dest_addr[1] = 0xFF;
 
-      beacon_payload_t tx_payload = {
+      beacon_payload_t beacon_payload = {
         session_id,
         cluster_flag,
         superframe_num,
@@ -408,13 +434,13 @@ uint8 *create_message(message_type_t msg_type)
         0, 0, 0, 0  //data2
       };
       /* Write all timestamps in the final message. See NOTE 8 below. */
-      resp_msg_set_rx_ts(&tx_payload, poll_rx_ts);
-      resp_msg_set_tx_ts(&tx_payload, resp_tx_ts);
+      resp_msg_set_rx_ts(&beacon_payload, poll_rx_ts);
+      resp_msg_set_tx_ts(&beacon_payload, resp_tx_ts);
 
       //uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
       memcpy(beacon_msg, &tx_msg_hdr, sizeof(message_header_t));
-      memcpy(beacon_msg + sizeof(message_header_t), &tx_payload, sizeof(beacon_payload_t));
-      return beacon_msg;
+      memcpy(beacon_msg + sizeof(message_header_t), &beacon_payload, sizeof(beacon_payload_t));
+      break;
     case (JOIN_REQ):
       tx_msg_hdr.dest_addr[0] = init_addr[0]; //this is the initiators address right now but it shouldn't make a difference
       tx_msg_hdr.dest_addr[1] = init_addr[1];
@@ -423,11 +449,13 @@ uint8 *create_message(message_type_t msg_type)
       //uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
       memcpy(join_req_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(join_req_msg + sizeof(message_header_t), &join_req_payload, sizeof(join_req_payload_t));
-      return join_req_msg;
-    // default:
-
-    //   return uint8 *;
-    //   //break;
+      break;
+    case (JOIN_CONF):
+    
+      break;
+    default:
+      printf("Cannot create invalid message type.\r\n");
+      break;
   }
 }
 
@@ -440,7 +468,48 @@ void set_src_addr()
   }
 }
 
-void send_message(uint8 *out_message, uint8 message_size)
+void send_timed_message(TimerHandle_t tx_timer)
+{
+  int ret;
+  // dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+  // dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
+  //ret = dwt_starttx(DWT_START_TX_DELAYED);
+
+  ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+  /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
+  if (ret == DWT_SUCCESS)
+  {
+    /* Poll DW1000 until TX frame sent event set. See NOTE 5 below. */
+    while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS))
+    {};
+
+    /* Clear TXFRS event. */
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+
+    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+    frame_seq_nb++;
+  }
+  else
+  {
+    /* If we end up in here then we have not succeded in transmitting the packet we sent up.
+    POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
+    For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
+    frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
+    Knowing the exact time when the responder is going to send its response is vital for time of flight
+    calculation. The specification of the time of respnse must allow the processor enough time to do its
+    calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
+    */
+
+    /* Reset RX to properly reinitialise LDE operation. */
+    dwt_rxreset();
+  }
+
+  xTimerDelete(tx_timer, 0);
+}
+
+
+void send_message(uint8* out_message, uint8 message_size)
 {
   int ret;
   dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
@@ -476,8 +545,8 @@ void send_message(uint8 *out_message, uint8 message_size)
     /* Reset RX to properly reinitialise LDE operation. */
     dwt_rxreset();
   }
+  xTimerDelete(tx_timer, 0);
 }
-
 
 /*****************************************************************************************************************************************************
 * NOTES:
