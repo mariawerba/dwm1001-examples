@@ -57,7 +57,7 @@ static dwt_config_t config = {
 #define PRE_TIMEOUT 1000
 
 /* Delay between frames, in UWB microseconds. See NOTE 1 below. */
-#define POLL_TX_TO_RESP_RX_DLY_UUS 100 
+#define POLL_TX_TO_RESP_RX_DLY_UUS 100
 
 /*Should be accurately calculated during calibration*/
 #define TX_ANT_DLY 16300
@@ -76,8 +76,12 @@ extern void ss_initiator_task_function (void * pvParameter);
 TaskHandle_t  led_toggle_task_handle;   /**< Reference to LED0 toggling FreeRTOS task. */
 TimerHandle_t led_toggle_timer_handle;  /**< Reference to LED1 toggling FreeRTOS timer. */
 TaskHandle_t process_uart_rx_handle;
+
+extern void create_tasks_and_resources(); //this creates a sempahore and task defined in ss_init_main
+
 #endif
 
+/*Added UWB Setting Init*/
 extern void set_src_addr();
 
 #ifdef USE_FREERTOS
@@ -145,7 +149,7 @@ int main(void)
     UNUSED_VARIABLE(xTimerStart(led_toggle_timer_handle, 0));
 
     /* Create task for SS TWR Initiator set to 2 */
-    UNUSED_VARIABLE(xTaskCreate(ss_initiator_task_function, "SSTWR_INIT", configMINIMAL_STACK_SIZE + 200, NULL, 2, &ss_initiator_task_handle));
+    UNUSED_VARIABLE(xTaskCreate(ss_initiator_task_function, "SSTWR_INIT", configMINIMAL_STACK_SIZE + 2000, NULL, 2, &ss_initiator_task_handle));
   #endif // #ifdef USE_FREERTOS
   
   //-------------dw1000  ini------------------------------------	
@@ -178,12 +182,12 @@ int main(void)
 
   /* Initialization of the DW1000 interrupt*/
   /* Callback are defined in ss_init_main.c */
-  //dwt_setcallbacks(&tx_conf_cb, &rx_ok_cb, &rx_to_cb, &rx_err_cb);
-  dwt_setcallbacks(&tx_conf_cb, &rx_ok_cb, NULL, &rx_err_cb);
+  dwt_setcallbacks(&tx_conf_cb, &rx_ok_cb, &rx_to_cb, &rx_err_cb);
+  //dwt_setcallbacks(&tx_conf_cb, &rx_ok_cb, NULL, &rx_err_cb);
 
   /* Enable wanted interrupts (TX confirmation, RX good frames, RX timeouts and RX errors). */
-  //dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RXPTO | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
-  dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
+  dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RXPTO | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
+  //dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
 
   /* Apply default antenna delay value. See NOTE 2 below. */
   dwt_setrxantennadelay(RX_ANT_DLY);
@@ -195,9 +199,11 @@ int main(void)
   /* Set expected response's delay and timeout. 
   * As this example only handles one incoming frame with always the same delay and timeout, those values can be set here once for all. */
   dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-  dwt_setrxtimeout(0); // Maximum value timeout with DW1000 is 65ms  
+  dwt_setrxtimeout(65000); // Maximum value timeout with DW1000 is 65ms, setting to 0 means timeout is disabled
 
   set_src_addr(); // Sets source address in outgoing messages in ss_init_main.c
+  dwt_setleds(DWT_LEDS_ENABLE); //this was somewhere else initially but it might as well be here
+  create_tasks_and_resources();
 
   //-------------dw1000  ini------end---------------------------	
   // IF WE GET HERE THEN THE LEDS WILL BLINK

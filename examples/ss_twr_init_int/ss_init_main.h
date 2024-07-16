@@ -30,3 +30,9 @@ static void resp_msg_get_ts(uint8 *ts_field, uint32 *ts);
 void ss_initiator_task_function (void * pvParameter);
 
 void set_src_addr();
+
+void create_tasks_and_resources();
+
+void process_message(void * pvParameter);
+
+//void create_tx_timer();

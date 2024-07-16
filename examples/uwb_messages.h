@@ -8,7 +8,8 @@ typedef enum
     BEACON,
     JOIN_REQ,
     JOIN_CONF,
-    SET_LOC
+    SET_LOC,
+    TEST
 } message_type_t;
 
 typedef struct
@@ -41,7 +42,22 @@ typedef struct
     /* data */
 } join_req_payload_t;
 
-typedef struct {
+typedef struct 
+{
     uint8 seat_num;
 } join_conf_payload_t;
 
+
+typedef struct
+{
+    bool joined;
+    uint8 fctrl[2]; //default, means something in IEEE
+    uint8 panid[2]; //default
+    uint8 src_addr[2];
+    uint8 session_id;
+    uint8 cluster_flag;
+    uint8 superframe_num;
+    uint8 seat_num;
+    uint8 seat_map;
+    uint8 init_addr[2];
+} uwb_network_param_t;

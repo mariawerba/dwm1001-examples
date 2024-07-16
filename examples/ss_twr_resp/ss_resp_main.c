@@ -99,14 +99,15 @@ static volatile int tx_count = 0 ; // Successful transmit counter
 static volatile int rx_count = 0 ; // Successful receive counter
 
 void create_message(message_type_t msg_type);
-void send_timed_message(TimerHandle_t tx_timer);
+void send_timed_message(TimerHandle_t tx_timer_handle);
 void send_message(uint8* out_message, uint8 message_size);
 
 static uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
 static uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
 static uint8 join_conf_msg[sizeof(message_header_t)+sizeof(join_conf_payload_t)+2] = {0};
 
-static TimerHandle_t tx_timer;
+TimerHandle_t tx_timer_handle;
+static uint32 timer_period = 100; //set to 100ms as default
 
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -162,7 +163,7 @@ void rx_ok_cb(const dwt_cb_data_t *cb_data)
 {
   rx_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #1 */
-  //dwt_forcetrxoff();
+  dwt_forcetrxoff();
   //ss_resp_run();
   //dwt_rxreset();
 
@@ -302,7 +303,7 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
 
   switch (rx_header->msg_type)
   {
-    case (BEACON):
+    case (5):
       // uint16 payload_size = rx_data_len - sizeof(*rx_header);
       // printf("payload size = %d\r\n", payload_size);
       printf('\r\n');
@@ -324,16 +325,18 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
           dwt_writetxdata((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), beacon_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
           dwt_writetxfctrl((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
           
-          tx_timer = xTimerCreate("tx_timer", pdMS_TO_TICKS(10*(seat_num)), pdTRUE, (void *)0, send_timed_message);
-          if (tx_timer == NULL) {
-              printf("Tx timer creation failed.\r\n");
-          }
-          
-          BaseType_t result = xTimerStart(tx_timer, 0);
-          if (result != pdPASS) {
-              printf("Tx timer start failed.\r\n");
-          }
-          //send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
+          timer_period = 10*(seat_num);
+          if (tx_timer_handle != NULL) 
+          {
+            xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(timer_period), 0);
+            xTimerStart(tx_timer_handle, 0);
+            printf("Tx timer started.\r\n");
+            // BaseType_t result = xTimerStart(tx_timer_handle, 0);
+            // if (result != pdPASS) 
+            // {
+            //     printf("Tx timer start failed.\r\n");
+            // }
+          } else { printf("Tx timer start failed.\r\n"); }
         }
         else //if not part of network make network join request if there is space
         {
@@ -351,23 +354,20 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
               mask <<= 1;
               open_seat++;
             }
-            seat_num = open_seat; //set local seat number to lowest open slot
+            seat_num = open_seat; //set local seat number to lowest open slot for jjoin request
 
             create_message(JOIN_REQ);
 
             dwt_writetxdata((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), beacon_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
             dwt_writetxfctrl((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
             
-            tx_timer = xTimerCreate("tx_timer", pdMS_TO_TICKS(100), pdTRUE, (void *)0, send_timed_message);
-            if (tx_timer == NULL) {
-                printf("Tx timer creation failed.\r\n");
-            }
-            
-            BaseType_t result = xTimerStart(tx_timer, 0);
-            if (result != pdPASS) {
-                printf("Tx timer start failed.\r\n");
-            }
-            //send_message(join_req_msg, (sizeof(message_header_t)+sizeof(join_req_payload_t)+2));
+            timer_period = 100;
+            if (tx_timer_handle != NULL) 
+            {
+              xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(timer_period), 0);
+              xTimerStart(tx_timer_handle, 0);
+              printf("Tx timer started.\r\n");
+            } else { printf("Tx timer start failed.\r\n"); }
           }
 
           printf("Requesting network join %d.\r\n", inverted_map);
@@ -375,7 +375,7 @@ void process_packet (uint8 *rx_buf, uint16 rx_data_len)
       }
       
       break;
-    case (1):
+    case (BEACON):
       printf("just checking \r\n");
       create_message(BEACON);
       send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
@@ -459,16 +459,8 @@ void create_message(message_type_t msg_type)
   }
 }
 
-void set_src_addr()
-{
-  uint32 unique_id = dwt_getpartid();
-  for (int i = 0; i < 2; i++)
-  {
-    src_addr[i] = (unique_id >> (i*8)) & 0xFF; //extract lower 16 bits
-  }
-}
 
-void send_timed_message(TimerHandle_t tx_timer)
+void send_timed_message(TimerHandle_t tx_timer_handle)
 {
   int ret;
   // dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
@@ -505,7 +497,8 @@ void send_timed_message(TimerHandle_t tx_timer)
     dwt_rxreset();
   }
 
-  xTimerDelete(tx_timer, 0);
+  xTimerStop(tx_timer_handle, 0);
+  xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(timer_period), 0);
 }
 
 
@@ -545,7 +538,24 @@ void send_message(uint8* out_message, uint8 message_size)
     /* Reset RX to properly reinitialise LDE operation. */
     dwt_rxreset();
   }
-  xTimerDelete(tx_timer, 0);
+}
+
+
+void set_src_addr()
+{
+  uint32 unique_id = dwt_getpartid();
+  for (int i = 0; i < 2; i++)
+  {
+    src_addr[i] = (unique_id >> (i*8)) & 0xFF; //extract lower 16 bits
+  }
+}
+
+void create_tx_timer()
+{
+  tx_timer_handle = xTimerCreate("tx_timer_handle", pdMS_TO_TICKS(timer_period), pdTRUE, (void *)0, send_timed_message);
+  if (tx_timer_handle == NULL) {
+      printf("Tx timer creation failed.\r\n");
+  }
 }
 
 /*****************************************************************************************************************************************************

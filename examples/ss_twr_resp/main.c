@@ -76,6 +76,7 @@ static dwt_config_t config = {
 #endif    // #ifdef USE_FREERTOS
 
 extern void set_src_addr();
+extern void create_tx_timer();
 
 #ifdef USE_FREERTOS
 
@@ -171,7 +172,8 @@ int main(void)
 
   dwt_setrxtimeout(0);    // set to NO receive timeout for this simple example
 
-  set_src_addr();   
+  set_src_addr();
+  create_tx_timer();   
 
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
