@@ -36,23 +36,24 @@
 /*Import common messaging functions*/
 
 /* Messaging info */
-static bool joined = FALSE;
+static bool joined = TRUE;
 static uint8 fctrl[] = {0x41, 0x88}; //default, means something in IEEE
 static uint8 panid[] = {0xCA, 0xDE}; //default
 static uint8 src_addr[2];
 static uint8 session_id;
 static uint8 cluster_flag;
 static uint8 superframe_num;
-static uint8 seat_num = 0;
+static uint8 seat_num = 1;
 static uint8 seat_map = 0x01;
 static uint8 init_addr[2];
 
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 250
+#define WATCHDOG_TIMEOUT pdMS_TO_TICKS(RNG_DELAY_MS)
 
 /* Frames used in the ranging process. See NOTE 1,2 below. */
 //static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0};
-static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 0xff, 0xff, 0xff, 0xff, 0x4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 0xff, 0xff, 0xff, 0xff, 0x0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static uint8 rx_resp_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'V', 'E', 'W', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 /* Length of the common part of the message (up to and including the function code, see NOTE 1 below). */
@@ -120,6 +121,8 @@ TaskHandle_t process_message_handle;
 TimerHandle_t tx_timer_handle;
 static uint32 tx_timer_period = 100; //set to 100ms as default
 void send_timed_message(TimerHandle_t tx_timer_handle);
+TimerHandle_t xWatchdogTimer;
+void vWatchdogCallback(void * pvParameter);
 
 /*Responder constants*/
 // Not enough time to write the data so TX timeout extended for nRF operation.
@@ -142,51 +145,59 @@ void send_timed_message(TimerHandle_t tx_timer_handle);
 */
 int ss_init_run(void)
 {
-  /* Loop forever initiating ranging exchanges. */
-
-
-  /* Write frame data to DW1000 and prepare transmission. See NOTE 3 below. */
-  tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-  
-  create_message(BEACON);
-  dwt_writetxdata(sizeof(beacon_msg), beacon_msg, 0); /* Zero offset in TX buffer. */
-  dwt_writetxfctrl(sizeof(beacon_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
-  // dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
-  // dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
-
-
-  /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
-  * set by dwt_setrxaftertxdelay() has elapsed. */
-  dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-
-  /*Waiting for transmission success flag*/
-  while (!(tx_int_flag))
-  {};
-
-  if (tx_int_flag)
+  if (seat_num == 0)
   {
-    tx_count++;
-    printf("Transmission # : %d\r\n",tx_count);
+    /* Loop forever initiating ranging exchanges. */
 
-    /*Reseting tx interrupt flag*/
-    tx_int_flag = 0 ;
+
+    /* Write frame data to DW1000 and prepare transmission. See NOTE 3 below. */
+    tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+    
+    create_message(BEACON);
+    dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
+    dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+
+    /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
+    * set by dwt_setrxaftertxdelay() has elapsed. */
+    dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+
+    /*Waiting for transmission success flag*/
+    while (!(tx_int_flag))
+    {};
+
+    if (tx_int_flag)
+    {
+      tx_count++;
+      printf("Transmission # : %d\r\n",tx_count);
+
+      /*Reseting tx interrupt flag*/
+      tx_int_flag = 0 ;
+    }
+
+    /* Wait for reception, timeout or error interrupt flag*/
+    while (!(rx_int_flag || to_int_flag|| er_int_flag))
+    {};
+
+    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+    frame_seq_nb++;
+
+    if (to_int_flag || er_int_flag)
+    {
+      /* Reset RX to properly reinitialise LDE operation. */
+      dwt_rxreset();
+
+      /*Reseting interrupt flag*/
+      to_int_flag = 0 ;
+      er_int_flag = 0 ;
+    }
   }
-
-  /* Wait for reception, timeout or error interrupt flag*/
-  while (!(rx_int_flag || to_int_flag|| er_int_flag))
-  {};
-
-  /* Increment frame sequence number after transmission of the poll message (modulo 256). */
-  frame_seq_nb++;
-
-  if (to_int_flag || er_int_flag)
+  else 
   {
-    /* Reset RX to properly reinitialise LDE operation. */
-    dwt_rxreset();
-
-    /*Reseting interrupt flag*/
-    to_int_flag = 0 ;
-    er_int_flag = 0 ;
+    // if (xTimerReset(xWatchdogTimer, 0) != pdPASS) 
+    // {
+    //   // Handle error if the timer reset fails
+    //   printf("Failed to reset watchdog timer!\n");
+    // }
   }
 
     /* Execute a delay between ranging exchanges. */
@@ -206,6 +217,12 @@ int ss_init_run(void)
 void rx_ok_cb(const dwt_cb_data_t *cb_data)
 {
   rx_int_flag = 1 ;
+  // if (xTimerReset(xWatchdogTimer, 0) != pdPASS) 
+  // {
+  //   // Handle error if the timer reset fails
+  //   printf("Failed to reset watchdog timer!\n");
+  // }
+  //dwt_rxenable(DWT_START_RX_IMMEDIATE | DWT_NO_SYNC_PTRS);
   xSemaphoreGiveFromISR(xProcessMsgSemaphore, NULL);
   /* TESTING BREAKPOINT LOCATION #1 */
 }
@@ -224,6 +241,11 @@ void rx_to_cb(const dwt_cb_data_t *cb_data)
   to_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #2 */
   printf("TimeOut\r\n");
+  if (seat_num != 0)
+  {
+    dwt_rxreset();
+    dwt_rxenable(DWT_START_RX_IMMEDIATE);
+  }
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -240,6 +262,11 @@ void rx_err_cb(const dwt_cb_data_t *cb_data)
   er_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #3 */
   printf("Transmission Error : may receive package from different UWB device\r\n");
+  if (seat_num != 0)
+  {
+    dwt_rxreset();
+    dwt_rxenable(DWT_START_RX_IMMEDIATE);
+  }
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -386,6 +413,14 @@ void create_tasks_and_resources()
     xTaskCreate(process_message, "proc_msg", configMINIMAL_STACK_SIZE + 2000, NULL, 2, &process_message_handle);
   }
 
+  // xWatchdogTimer = xTimerCreate("WatchdogTimer", RNG_DELAY_MS, pdTRUE, NULL, vWatchdogCallback);
+  // if (xTimerStart(xWatchdogTimer, 0) != pdPASS) 
+  // {
+  //     // Handle error if the timer start fails
+  //     printf("Failed to start watchdog timer!\n");
+  //     return -1;
+  // }
+
   tx_timer_handle = xTimerCreate("tx_timer_handle", pdMS_TO_TICKS(tx_timer_period), pdTRUE, (void *)0, send_timed_message);
   if (tx_timer_handle == NULL) {
       printf("Tx timer creation failed.\r\n");
@@ -409,63 +444,19 @@ void process_message(void * pvParameter)
         process_rx_buffer(rx_buffer, frame_len);
       }
       rx_int_flag = 0; 
-
-      // /* Check that the frame is the expected response from the companion "SS TWR responder" example.
-      // * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
-      // rx_buffer[ALL_MSG_SN_IDX] = 0;
-      // if (TRUE)//(memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
-      // {	
-      //   rx_count++;
-      //   printf("Reception # : %d\r\n",rx_count);
-      //   float reception_rate = (float) rx_count / (float) tx_count * 100;
-      //   printf("Reception rate # : %f\r\n",reception_rate);
-      //   uint32 poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
-      //   int32 rtd_init, rtd_resp;
-      //   float clockOffsetRatio ;
-
-      //   /* Retrieve poll transmission and response reception timestamps. See NOTE 4 below. */
-      //   poll_tx_ts = dwt_readtxtimestamplo32();
-      //   resp_rx_ts = dwt_readrxtimestamplo32();
-
-      //   /* Read carrier integrator value and calculate clock offset ratio. See NOTE 6 below. */
-      //   clockOffsetRatio = dwt_readcarrierintegrator() * (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_5 / 1.0e6) ;
-
-      //   /* Get timestamps embedded in response message. */
-      //   // resp_msg_get_ts(&rx_buffer[15], &poll_rx_ts);
-      //   //resp_msg_get_ts(&rx_buffer[19], &resp_tx_ts);
-      //   message_header_t *rx_header = (message_header_t *) rx_buffer;
-      //   if (rx_header->msg_type == JOIN_REQ)
-      //   {
-      //     join_req_payload_t *rx_payload = (join_req_payload_t *) (rx_buffer + sizeof(*rx_header));
-      //     uint8 inverted_map = ~seat_map;
-      //     if ((inverted_map & (rx_payload->seat_num)) != 0)
-      //     {
-
-      //         //send
-      //     }
-      //   }
-      //   if(rx_header->msg_type == BEACON)
-      //   {
-      //     beacon_payload_t *rx_payload = (beacon_payload_t *) (rx_buffer + sizeof(*rx_header));
-      //     resp_msg_get_rx_ts(rx_payload, &poll_rx_ts);
-      //     resp_msg_get_tx_ts(rx_payload, &resp_tx_ts);
-      //   }
-
-
-      //   /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
-      //   rtd_init = resp_rx_ts - poll_tx_ts;
-      //   rtd_resp = resp_tx_ts - poll_rx_ts;
-
-      //   tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
-      //   distance = tof * SPEED_OF_LIGHT;
-      //   printf("Distance : %f\r\n",distance);
-
-      //   /*Reseting receive interrupt flag*/
-      //   rx_int_flag = 0; 
-      // }
     }
   }
 }
+
+// void vWatchdogCallback(void * pvParameter) {
+//     // Handle the watchdog timeout (e.g., reset the system)
+//     // For this example, we'll just print a message
+//     //printf("Watchdog timer expired! System is not responding.\n");
+//     dwt_forcetrxoff();
+//     dwt_rxreset();
+//     dwt_rxenable(DWT_START_RX_IMMEDIATE);
+//     // Perform system reset or other fault recovery actions here
+// }
 
 
 void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
@@ -578,7 +569,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
     case (JOIN_REQ):
       if (seat_num == 0)
       {
-        printf("just checking \r\n");
+        printf("Creating join request \r\n");
         rx_join_req_payload = (join_req_payload_t *) (rx_buffer + sizeof(*rx_header));
         uint8 inverted_map = ~seat_map;
         if ((inverted_map & (rx_join_req_payload->seat_num)) != 0)
@@ -591,6 +582,12 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       break;
     case (JOIN_CONF):
       //insert join conf process here
+      break;
+    case (TEST):
+      printf("just checking \r\n");
+      create_message(BEACON);
+      send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
+      //dwt_rxenable(DWT_START_RX_IMMEDIATE);
       break;
     default:
       printf("Invalid message type received.\r\n");
@@ -606,7 +603,7 @@ void create_message(message_type_t msg_type)
     panid[0], panid[1],
     0, 0, // these destination address fields will be set below
     src_addr[0], src_addr[1],
-    (uint8)TEST
+    (uint8)msg_type
   };
 
   //TODO: move this to its own function?
@@ -678,7 +675,7 @@ void send_timed_message(TimerHandle_t tx_timer_handle)
   // dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
   //ret = dwt_starttx(DWT_START_TX_DELAYED);
 
-  ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+  ret = dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
   /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
   if (ret == DWT_SUCCESS)
@@ -711,6 +708,46 @@ void send_timed_message(TimerHandle_t tx_timer_handle)
   xTimerStop(tx_timer_handle, 0);
   xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(tx_timer_period), 0);
 }
+
+void send_message(uint8* out_message, uint8 message_size)
+{
+  int ret;
+  dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+  dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
+  ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+  //ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+  /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
+  if (ret == DWT_SUCCESS)
+  {
+    /* Poll DW1000 until TX frame sent event set. See NOTE 5 below. */
+    while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS))
+    {};
+
+    /* Clear TXFRS event. */
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+
+    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+    frame_seq_nb++;
+  }
+  else
+  {
+    /* If we end up in here then we have not succeded in transmitting the packet we sent up.
+    POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
+    For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
+    frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
+    Knowing the exact time when the responder is going to send its response is vital for time of flight
+    calculation. The specification of the time of respnse must allow the processor enough time to do its
+    calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
+    */
+
+    /* Reset RX to properly reinitialise LDE operation. */
+    dwt_rxreset();
+  }
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);
+}
+
 
 
 /*****************************************************************************************************************************************************
