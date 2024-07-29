@@ -47,6 +47,9 @@ static uint8 seat_num = 0;
 static uint8 seat_map = 0x01;
 static uint8 init_addr[2];
 
+static uint8 rx_addr[2];
+static uint8 rx_seat_num;
+
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 250
 
@@ -116,10 +119,11 @@ static join_conf_payload_t *rx_join_conf_payload;
 
 /*Added FreeRTOS elements*/
 SemaphoreHandle_t xProcessMsgSemaphore;
+SemaphoreHandle_t xSendMsgSemaphore;
 TaskHandle_t process_message_handle;
-TimerHandle_t tx_timer_handle;
+TaskHandle_t tx_timer_handle;
+void send_timed_message(void * pvParameter);
 static uint32 tx_timer_period = 100; //set to 100ms as default
-void send_timed_message(TimerHandle_t tx_timer_handle);
 
 /*Responder constants*/
 // Not enough time to write the data so TX timeout extended for nRF operation.
@@ -160,10 +164,8 @@ int ss_init_run(void)
   dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
   /*Waiting for transmission success flag*/
-  while (!(tx_int_flag))
-  {};
 
-  if (tx_int_flag)
+  if (1)
   {
     tx_count++;
     printf("Transmission # : %d\r\n",tx_count);
@@ -380,15 +382,16 @@ void set_src_addr()
 void create_tasks_and_resources()
 {
   xProcessMsgSemaphore = xSemaphoreCreateBinary();
+  xSendMsgSemaphore = xSemaphoreCreateBinary();
 
   if (xProcessMsgSemaphore != NULL)
   {
     xTaskCreate(process_message, "proc_msg", configMINIMAL_STACK_SIZE + 2000, NULL, 2, &process_message_handle);
   }
 
-  tx_timer_handle = xTimerCreate("tx_timer_handle", pdMS_TO_TICKS(tx_timer_period), pdTRUE, (void *)0, send_timed_message);
-  if (tx_timer_handle == NULL) {
-      printf("Tx timer creation failed.\r\n");
+  if (xProcessMsgSemaphore != NULL)
+  {
+    xTaskCreate(send_timed_message, "send_timed_msg", configMINIMAL_STACK_SIZE + 2000, NULL, 2, &tx_timer_handle);
   }
 }
 
@@ -476,7 +479,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
   switch (rx_header->msg_type)
   {
     case (BEACON):
-      memcpy(rx_beacon_payload, rx_payload, sizeof(beacon_payload_t));
+      rx_beacon_payload = (beacon_payload_t *)rx_payload;
       if(seat_num == 0) //if I am the initiator
       {
         rx_count++;
@@ -505,6 +508,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
         distance = tof * SPEED_OF_LIGHT;
         printf("Distance : %f\r\n",distance);
+        dwt_rxenable(DWT_START_RX_IMMEDIATE);
       }
       else
       {
@@ -578,12 +582,21 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
     case (JOIN_REQ):
       if (seat_num == 0)
       {
-        printf("just checking \r\n");
-        rx_join_req_payload = (join_req_payload_t *) (rx_buffer + sizeof(*rx_header));
+        rx_join_req_payload = (join_req_payload_t *)rx_payload;
         uint8 inverted_map = ~seat_map;
-        if ((inverted_map & (rx_join_req_payload->seat_num)) != 0)
+        if ((seat_map & (1U << (rx_join_req_payload->seat_num))) == 0)
         {
-
+          rx_addr[0] = rx_header->src_addr[0];
+          rx_addr[1] = rx_header->src_addr[1];
+          rx_seat_num = rx_join_req_payload->seat_num;
+          create_message(JOIN_CONF);
+          dwt_writetxdata(sizeof(join_conf_msg), join_conf_msg, 0); /* Zero offset in TX buffer. */
+          dwt_writetxfctrl(sizeof(join_conf_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+          // dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+          printf("Responding to %d request for SEAT %d.\r\n", rx_addr[0], rx_seat_num);
+          seat_map = seat_map | (1U << (rx_join_req_payload->seat_num)); //update seat map to reflect occupation of slot
+          tx_timer_period = 10;
+          xSemaphoreGive(xSendMsgSemaphore);
             //send
         }
       //send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
@@ -606,7 +619,7 @@ void create_message(message_type_t msg_type)
     panid[0], panid[1],
     0, 0, // these destination address fields will be set below
     src_addr[0], src_addr[1],
-    (uint8)TEST
+    (uint8)msg_type
   };
 
   //TODO: move this to its own function?
@@ -646,21 +659,24 @@ void create_message(message_type_t msg_type)
       resp_msg_set_rx_ts(&beacon_payload, poll_rx_ts);
       resp_msg_set_tx_ts(&beacon_payload, resp_tx_ts);
 
-      //uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
       memcpy(beacon_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(beacon_msg + sizeof(message_header_t), &beacon_payload, sizeof(beacon_payload_t));
       break;
     case (JOIN_REQ):
       tx_msg_hdr.dest_addr[0] = init_addr[0]; //this is the initiators address right now but it shouldn't make a difference
       tx_msg_hdr.dest_addr[1] = init_addr[1];
-     
       join_req_payload_t join_req_payload = {seat_num};
-      //uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
+      
       memcpy(join_req_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(join_req_msg + sizeof(message_header_t), &join_req_payload, sizeof(join_req_payload_t));
       break;
     case (JOIN_CONF):
-    
+      tx_msg_hdr.dest_addr[0] = rx_addr[0]; //this is the initiators address right now but it shouldn't make a difference
+      tx_msg_hdr.dest_addr[1] = rx_addr[1];
+      join_conf_payload_t join_conf_payload = {rx_seat_num};
+      
+      memcpy(join_conf_msg, &tx_msg_hdr, sizeof(message_header_t));
+      memcpy(join_conf_msg + sizeof(message_header_t), &join_conf_payload, sizeof(join_req_payload_t));
       break;
     default:
       printf("Cannot create invalid message type.\r\n");
@@ -671,45 +687,53 @@ void create_message(message_type_t msg_type)
 
 
 
-void send_timed_message(TimerHandle_t tx_timer_handle)
+void send_timed_message(void * pvParameter)
 {
-  int ret;
-  // dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
-  // dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
-  //ret = dwt_starttx(DWT_START_TX_DELAYED);
-
-  ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
-
-  /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
-  if (ret == DWT_SUCCESS)
+  UNUSED_PARAMETER(pvParameter);
+  while (true)
   {
-    /* Poll DW1000 until TX frame sent event set. See NOTE 5 below. */
-    while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS))
-    {};
+    if(xSemaphoreTake(xSendMsgSemaphore, portMAX_DELAY) == pdTRUE)
+    {
+      vTaskDelay(tx_timer_period);
+      int ret;
+      // dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+      // dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
+      //ret = dwt_starttx(DWT_START_TX_DELAYED);
 
-    /* Clear TXFRS event. */
-    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+      ret = dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
-    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
-    frame_seq_nb++;
+      /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
+      if (ret == DWT_SUCCESS)
+      {
+        /* Poll DW1000 until TX frame sent event set. See NOTE 5 below. */
+        while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS))
+        {};
+
+        /* Clear TXFRS event. */
+        dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
+
+        /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+        frame_seq_nb++;
+      }
+      else
+      {
+        /* If we end up in here then we have not succeded in transmitting the packet we sent up.
+        POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
+        For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
+        frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
+        Knowing the exact time when the responder is going to send its response is vital for time of flight
+        calculation. The specification of the time of respnse must allow the processor enough time to do its
+        calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
+        */
+
+        /* Reset RX to properly reinitialise LDE operation. */
+        dwt_rxreset();
+      }
+
+      //xTimerStop(tx_timer_handle, 0);
+      //xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(tx_timer_period), 0);
+    }
   }
-  else
-  {
-    /* If we end up in here then we have not succeded in transmitting the packet we sent up.
-    POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
-    For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
-    frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
-    Knowing the exact time when the responder is going to send its response is vital for time of flight
-    calculation. The specification of the time of respnse must allow the processor enough time to do its
-    calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
-    */
-
-    /* Reset RX to properly reinitialise LDE operation. */
-    dwt_rxreset();
-  }
-
-  xTimerStop(tx_timer_handle, 0);
-  xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(tx_timer_period), 0);
 }
 
 
