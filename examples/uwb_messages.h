@@ -28,7 +28,7 @@ typedef struct
     uint8 cluster_flag;
     uint8 superframe_num;
     uint8 seat_num;
-    uint8 seat_map;
+    uint32 seat_map;
     uint8 rx_ts[4];
     uint8 tx_ts[4];
     uint8 data_type;

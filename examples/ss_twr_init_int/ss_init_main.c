@@ -44,7 +44,7 @@ static uint8 session_id;
 static uint8 cluster_flag;
 static uint8 superframe_num;
 static uint8 seat_num = 0;
-static uint8 seat_map = 0x01;
+static uint32 seat_map = 0x00000001;
 static uint8 init_addr[2];
 
 static uint8 rx_addr[2];
@@ -544,7 +544,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           }
           else //if not part of network make network join request if there is space
           {
-            uint8 inverted_map = ~(rx_beacon_payload->seat_map);
+            uint32 inverted_map = ~(rx_beacon_payload->seat_map);
             if (inverted_map == 0) //all seats are full
             {
               return; //have to wait until there is an opening
@@ -552,7 +552,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
             else
             {
               uint8 open_seat = 0;
-              uint8 mask = 0x1;
+              uint32 mask = 0x1;
               while ((inverted_map & mask) == 0)
               {
                 mask <<= 1;
@@ -583,7 +583,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       if (seat_num == 0)
       {
         rx_join_req_payload = (join_req_payload_t *)rx_payload;
-        uint8 inverted_map = ~seat_map;
+        uint32 inverted_map = ~seat_map;
         if ((seat_map & (1U << (rx_join_req_payload->seat_num))) == 0)
         {
           rx_addr[0] = rx_header->src_addr[0];
@@ -595,7 +595,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           // dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
           printf("Responding to %d request for SEAT %d.\r\n", rx_addr[0], rx_seat_num);
           seat_map = seat_map | (1U << (rx_join_req_payload->seat_num)); //update seat map to reflect occupation of slot
-          tx_timer_period = 10;
+          tx_timer_period = 40;
           xSemaphoreGive(xSendMsgSemaphore);
             //send
         }
