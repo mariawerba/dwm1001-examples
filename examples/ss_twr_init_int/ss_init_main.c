@@ -45,25 +45,22 @@ static uint8 seat_num = 0;
 static uint32 seat_map = 0x00000001;
 static uint8 init_addr[2];
 
-static uint8 rx_addr[2];
+static uint8 tx_dest_addr[2];
 static uint8 rx_seat_num;
 static uint8 num_resp = 1;
 
 uwb_device_t in_network_devices[32] = {NULL};
 
 /* Inter-ranging delay period, in milliseconds. */
-#define RNG_DELAY_MS 250
+#define RNG_DELAY_MS 100
 
 /* Frames used in the ranging process. See NOTE 1,2 below. */
 //empty now
 
 /* Length of the common part of the message (up to and including the function code, see NOTE 1 below). */
-#define ALL_MSG_COMMON_LEN 10
+//empty now
 
 /* Indexes to access some of the fields in the frames defined above. */
-#define ALL_MSG_SN_IDX 2
-#define RESP_MSG_POLL_RX_TS_IDX 10
-#define RESP_MSG_RESP_TX_TS_IDX 14
 #define RESP_MSG_TS_LEN 4
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
@@ -121,13 +118,12 @@ static twr_payload_t *rx_twr_payload;
 /*Added FreeRTOS elements*/
 SemaphoreHandle_t xProcessMsgSemaphore;
 SemaphoreHandle_t xSendMsgSemaphore;
-SemaphoreHandle_t xTWRSemaphore;
-SemaphoreHandle_t xTWRProcSemaphore;
+//SemaphoreHandle_t xTWRSemaphore;
 TaskHandle_t process_message_handle;
 TaskHandle_t tx_timer_handle;
-TaskHandle_t twr_handle;
+//TaskHandle_t twr_handle;
 void send_timed_message(void * pvParameter);
-void twr_exchange(void * pvParameter);
+void twr_exchange();
 static uint32 tx_timer_period = 100; //set to 100ms as default
 static uint32 twr_timer = 100;
 
@@ -160,22 +156,17 @@ int ss_init_run(void)
   dwt_writetxdata(sizeof(beacon_msg), beacon_msg, 0); /* Zero offset in TX buffer. */
   dwt_writetxfctrl(sizeof(beacon_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
 
-
   /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
   * set by dwt_setrxaftertxdelay() has elapsed. */
   dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-  // xSemaphoreGive(xTWRSemaphore);
 
   /*Waiting for transmission success flag*/
 
-  if (1)
-  {
-    tx_count++;
-    printf("Transmission # : %d\r\n",tx_count);
+  tx_count++;
+  //printf("Transmission # : %d\r\n",tx_count);
 
-    /*Reseting tx interrupt flag*/
-    tx_int_flag = 0 ;
-  }
+  /*Reseting tx interrupt flag*/
+  tx_int_flag = 0 ;
 
   /* Wait for reception, timeout or error interrupt flag*/
   while (!(rx_int_flag || to_int_flag|| er_int_flag))
@@ -197,18 +188,14 @@ int ss_init_run(void)
     /* Execute a delay between ranging exchanges. */
   // deca_sleep(RNG_DELAY_MS);
   // return(1);
-  float reception_rate = (float) rx_count / (float) tx_count * 100;
-  printf("Reception rate # : %f\r\n",reception_rate);
-  printf("seat_map = %08X\r\n", seat_map);
-  for (uint8 i = 0; i<num_resp; i++)
-  {
-    //if (in_network_devices[i] != NULL)
-    //{
-    printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
-    //}
+  // float reception_rate = (float) rx_count / (float) tx_count * 100;
+  // printf("Reception rate # : %f\r\n",reception_rate);
+  // printf("seat_map = %08X\r\n", seat_map);
+  // for (uint8 i = 0; i<4; i++)
+  // {
+  //   printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
 
-  }
-  // printf("Distance to SEAT %d: %f\r\n", rx_seat_num, distance);
+  // }
 }
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -373,15 +360,20 @@ static uint64 get_rx_timestamp_u64(void)
 void ss_initiator_task_function (void * pvParameter)
 {
   UNUSED_PARAMETER(pvParameter);
-
-  // dwt_setleds(DWT_LEDS_ENABLE);
-
   while (true)
   {
     ss_init_run();
     vTaskDelay(twr_timer);
-    xSemaphoreGive(xTWRSemaphore);
+    twr_exchange();
     /* Delay a task for a given number of ticks */
+    float reception_rate = (float) rx_count / (float) tx_count * 100;
+    printf("Reception rate # : %f\r\n",reception_rate);
+    printf("seat_map = %08X\r\n", seat_map);
+    for (uint8 i = 0; i<4; i++)
+    {
+      printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
+
+    }
     vTaskDelay(RNG_DELAY_MS);
     /* Tasks must be implemented to never return... */
   }
@@ -400,8 +392,6 @@ void create_tasks_and_resources()
 {
   xProcessMsgSemaphore = xSemaphoreCreateBinary();
   xSendMsgSemaphore = xSemaphoreCreateBinary();
-  xTWRSemaphore = xSemaphoreCreateBinary();
-  xTWRProcSemaphore = xSemaphoreCreateBinary();
 
   if (xProcessMsgSemaphore != NULL)
   {
@@ -411,11 +401,6 @@ void create_tasks_and_resources()
   if (xProcessMsgSemaphore != NULL)
   {
     xTaskCreate(send_timed_message, "send_timed_msg", configMINIMAL_STACK_SIZE + 2000, NULL, 2, &tx_timer_handle);
-  }
-
-  if (xTWRSemaphore != NULL)
-  {
-    xTaskCreate(twr_exchange, "twr_exchange", configMINIMAL_STACK_SIZE + 2000, NULL, 3, &twr_handle);
   }
 }
 
@@ -492,6 +477,11 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           init_addr[0] = rx_header->src_addr[0];
           init_addr[1] = rx_header->src_addr[1];
 
+          if (seat_map == 1)
+          {
+            joined = FALSE;
+          }
+
           if (joined==TRUE) //if already part of network respond accordingly
           {
             create_message(BEACON);
@@ -546,18 +536,18 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         uint32 inverted_map = ~seat_map;
         if ((seat_map & (1U << (rx_join_req_payload->seat_num))) == 0)
         {
-          rx_addr[0] = rx_header->src_addr[0];
-          rx_addr[1] = rx_header->src_addr[1];
+          tx_dest_addr[0] = rx_header->src_addr[0];
+          tx_dest_addr[1] = rx_header->src_addr[1];
           rx_seat_num = rx_join_req_payload->seat_num;
           create_message(JOIN_CONF);
           dwt_writetxdata(sizeof(join_conf_msg), join_conf_msg, 0); /* Zero offset in TX buffer. */
           dwt_writetxfctrl(sizeof(join_conf_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
           // dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-          printf("Responding to %d request for SEAT %d.\r\n", rx_addr[0], rx_seat_num);
+          printf("Responding to %d request for SEAT %d.\r\n", tx_dest_addr[0], rx_seat_num);
           seat_map = seat_map | (1U << (rx_join_req_payload->seat_num)); //update seat map to reflect occupation of slot
           num_resp++;
-          in_network_devices[rx_seat_num].dev_addr[0] = rx_addr[0];
-          in_network_devices[rx_seat_num].dev_addr[1] = rx_addr[1];
+          in_network_devices[rx_seat_num].dev_addr[0] = tx_dest_addr[0];
+          in_network_devices[rx_seat_num].dev_addr[1] = tx_dest_addr[1];
           in_network_devices[rx_seat_num].seat_num = rx_seat_num;
           tx_timer_period = 10;
           xSemaphoreGive(xSendMsgSemaphore);
@@ -597,19 +587,6 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
         distance = tof * SPEED_OF_LIGHT;
         in_network_devices[rx_seat_num].distance = distance;
-        //printf("Distance to SEAT %d: %f\r\n", rx_seat_num, distance);
-       // printf("gothere0\r\n");
-        //vTaskDelay(4);
-        //xSemaphoreGive(xTWRSemaphore);
-        //BaseType_t xResult = xTaskNotifyGive(twr_handle);
-        // if (xResult != pdPASS)
-        // {
-        //   printf("notify did not work\r\n");
-        // }
-        //xSemaphoreGive(xTWRProcSemaphore);
-        //dwt_rxenable(DWT_START_RX_IMMEDIATE);
-        //vTaskResume(twr_handle);
-        //xSemaphoreGive(xTWRSemaphore);
       }
       else if((rx_header->dest_addr[0]==src_addr[0]) && (rx_header->dest_addr[1]==src_addr[1]))
       {
@@ -690,16 +667,16 @@ void create_message(message_type_t msg_type)
       memcpy(join_req_msg + sizeof(message_header_t), &join_req_payload, sizeof(join_req_payload_t));
       break;
     case (JOIN_CONF):
-      tx_msg_hdr.dest_addr[0] = rx_addr[0];
-      tx_msg_hdr.dest_addr[1] = rx_addr[1];
+      tx_msg_hdr.dest_addr[0] = tx_dest_addr[0];
+      tx_msg_hdr.dest_addr[1] = tx_dest_addr[1];
       join_conf_payload_t join_conf_payload = {rx_seat_num};
       
       memcpy(join_conf_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(join_conf_msg + sizeof(message_header_t), &join_conf_payload, sizeof(join_req_payload_t));
       break;
     case (TWR):
-      tx_msg_hdr.dest_addr[0] = rx_addr[0];
-      tx_msg_hdr.dest_addr[1] = rx_addr[1];
+      tx_msg_hdr.dest_addr[0] = tx_dest_addr[0];
+      tx_msg_hdr.dest_addr[1] = tx_dest_addr[1];
       twr_payload_t twr_payload;
       resp_msg_set_rx_ts(&twr_payload, poll_rx_ts);
       resp_msg_set_tx_ts(&twr_payload, resp_tx_ts);
@@ -726,10 +703,6 @@ void send_timed_message(void * pvParameter)
     {
       vTaskDelay(tx_timer_period);
       int ret;
-      // dwt_writetxdata(message_size, out_message, 0); /* Zero offset in TX buffer. See Note 5 below.*/
-      // dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
-      //ret = dwt_starttx(DWT_START_TX_DELAYED);
-
       ret = dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
       /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
@@ -759,9 +732,6 @@ void send_timed_message(void * pvParameter)
         /* Reset RX to properly reinitialise LDE operation. */
         dwt_rxreset();
       }
-
-      //xTimerStop(tx_timer_handle, 0);
-      //xTimerChangePeriod(tx_timer_handle, pdMS_TO_TICKS(tx_timer_period), 0);
     }
   }
 }
@@ -804,59 +774,30 @@ void send_message(uint8* out_message, uint8 message_size)
   }
 }
 
-void twr_exchange(void * pvParameter)
+void twr_exchange()
 {
-  UNUSED_PARAMETER(pvParameter);
-  while (true)
+  // UNUSED_PARAMETER(pvParameter);
+  // while (true)
+  // {
+  static int i = 1;
+  // if(xSemaphoreTake(xTWRSemaphore, portMAX_DELAY) == pdTRUE)
+  // {
+  if (i < num_resp)
   {
-    static int i = 1;
-    if(xSemaphoreTake(xTWRSemaphore, portMAX_DELAY) == pdTRUE)
-    {
-      //vTaskDelay(twr_timer);
-      //printf("entered twr\r\n");
-      if (i < num_resp)
-      {
-        //printf("sent \r\n");
-        rx_addr[0] = in_network_devices[i].dev_addr[0];
-        rx_addr[1] = in_network_devices[i].dev_addr[1];
-        create_message(TWR);
-        //uint32 delayed_tx_time =   dwt_readtxtimestamphi32() ;
-       //delayed_tx_time +=  0x17CDC00/5;
-    
-        dwt_writetxdata(sizeof(twr_msg), twr_msg, 0); /* Zero offset in TX buffer. */
-        dwt_writetxfctrl(sizeof(twr_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
-        
-        //dwt_setdelayedtrxtime(delayed_tx_time);
-        //xSemaphoreTake(xTWRProcSemaphore, 0);
-        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-        //int ret = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED);
-        // if (ret != DWT_SUCCESS)
-        // {
-        //   printf("lol\r\n");
-        // }
-       // vTaskDelay(10);
-        //ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        //ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-        //vTaskDelay(20);
-        // xSemaphoreTake(xTWRProcSemaphore, portMAX_DELAY);
-        // while(xSemaphoreTake(xTWRProcSemaphore, 0) != pdTRUE)
-        // {
-        //   static int printer = 0;
-        //   if((printer%5000)==0)
-        //   {
-        //     printf("lalalal\n\r");
-        //   }
-        //   printer ++;
-        // }
-        i++;
-      }
-      else
-      {
-        i = 1;
-
-      }
-    }
+    tx_dest_addr[0] = in_network_devices[i].dev_addr[0];
+    tx_dest_addr[1] = in_network_devices[i].dev_addr[1];
+    create_message(TWR);
+    dwt_writetxdata(sizeof(twr_msg), twr_msg, 0); /* Zero offset in TX buffer. */
+    dwt_writetxfctrl(sizeof(twr_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+    dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+    i++;
   }
+  else
+  {
+    i = 1;
+  }
+  // }
+  // }
 }
 
 
