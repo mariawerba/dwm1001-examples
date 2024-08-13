@@ -78,6 +78,7 @@ TimerHandle_t led_toggle_timer_handle;  /**< Reference to LED1 toggling FreeRTOS
 TaskHandle_t process_uart_rx_handle;
 
 extern void create_tasks_and_resources(); //this creates a sempahore and task defined in ss_init_main
+extern uint8 seat_num;
 
 #endif
 
@@ -205,6 +206,11 @@ int main(void)
   set_src_addr(); // Sets source address in outgoing messages in ss_init_main.c
   dwt_setleds(DWT_LEDS_ENABLE); //this was somewhere else initially but it might as well be here
   create_tasks_and_resources();
+
+  if (seat_num != 0)
+  {
+    dwt_rxenable(DWT_START_RX_IMMEDIATE);
+  }  
 
   //-------------dw1000  ini------end---------------------------	
   // IF WE GET HERE THEN THE LEDS WILL BLINK
