@@ -8,7 +8,6 @@ typedef enum
     BEACON,
     JOIN_REQ,
     JOIN_CONF,
-    TWR,
     SET_LOC,
     TEST
 } message_type_t;
@@ -32,6 +31,9 @@ typedef struct
     uint32 seat_map;
     uint8 rx_ts[4];
     uint8 tx_ts[4];
+    uint32 x_pos;
+    uint32 y_pos;
+    uint32 z_pos;
     uint8 data_type;
     uint8 data1[4];
     uint8 data2[4];
@@ -47,16 +49,6 @@ typedef struct
 {
     uint8 seat_num;
 } join_conf_payload_t;
-
-typedef struct
-{
-    uint32 seat_num;
-    uint8 rx_ts[4];
-    uint8 tx_ts[4];
-    uint32 x_pos;
-    uint32 y_pos;
-    uint32 z_pos;
-} twr_payload_t;
 
 typedef struct
 {

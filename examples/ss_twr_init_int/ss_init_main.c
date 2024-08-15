@@ -43,7 +43,7 @@ static uint8 cluster_flag;
 static uint8 superframe_num;
 uint8 seat_num = 0; //change to 0xff for resp
 static uint32 seat_map = 0x00000001; //change to 0xffffffff for resp
-//  uint8 seat_num = 0xff;
+// uint8 seat_num = 0xff;
 // static uint32 seat_map = 0xffffffff;
 static uint8 init_addr[2];
 
@@ -54,7 +54,7 @@ static uint8 num_resp = 1;
 uwb_device_t in_network_devices[32] = {NULL};
 
 /* Inter-ranging delay period, in milliseconds. */
-#define RNG_DELAY_MS 50
+#define RNG_DELAY_MS 300
 
 /* Frames used in the ranging process. See NOTE 1,2 below. */
 //empty now
@@ -91,8 +91,8 @@ static double distance;
 
 /* Declaration of static functions. */
 static void resp_msg_get_ts(uint8 *ts_field, uint32 *ts);
-static void resp_msg_get_rx_ts(twr_payload_t *tx_payload, uint32 *ts);
-static void resp_msg_get_tx_ts(twr_payload_t *tx_payload, uint32 *ts);
+static void resp_msg_get_rx_ts(beacon_payload_t *tx_payload, uint32 *ts);
+static void resp_msg_get_tx_ts(beacon_payload_t *tx_payload, uint32 *ts);
 
 /*Interrupt flag*/
 static volatile int tx_int_flag = 0 ; // Transmit success interrupt flag
@@ -108,14 +108,12 @@ static volatile int rx_count = 0 ; // Successful receive counter
 static uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
 static uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
 static uint8 join_conf_msg[sizeof(message_header_t)+sizeof(join_conf_payload_t)+2] = {0};
-static uint8 twr_msg[sizeof(message_header_t)+sizeof(twr_payload_t)+2] = {0};
 
 static message_header_t *rx_header;
 static uint8 *rx_payload;
 static beacon_payload_t *rx_beacon_payload;
 static join_req_payload_t *rx_join_req_payload;
 static join_conf_payload_t *rx_join_conf_payload;
-static twr_payload_t *rx_twr_payload;
 
 /*Added FreeRTOS elements*/
 SemaphoreHandle_t xProcessMsgSemaphore;
@@ -123,9 +121,7 @@ SemaphoreHandle_t xSendMsgSemaphore;
 TaskHandle_t process_message_handle;
 TaskHandle_t tx_timer_handle;
 void send_timed_message(void * pvParameter);
-void twr_exchange();
 static uint32 tx_timer_period = 100; //set to 100ms as default
-static uint32 twr_timer = 100;
 
 /*Responder constants*/
 // Not enough time to write the data so TX timeout extended for nRF operation.
@@ -135,6 +131,9 @@ static uint32 twr_timer = 100;
 
 /* This is the delay from the end of the frame transmission to the enable of the receiver, as programmed for the DW1000's wait for response feature. */
 #define RESP_TX_TO_FINAL_RX_DLY_UUS 500
+
+/*Relocated timestamp variables*/
+uint32 poll_tx_ts;
 
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -160,32 +159,13 @@ int ss_init_run(void)
     /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
     * set by dwt_setrxaftertxdelay() has elapsed. */
     dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_TXFRS)))
+    { };
+
+    poll_tx_ts = dwt_readtxtimestamplo32();
 
     tx_count++;
-
-    /*Reseting tx interrupt flag*/
-    tx_int_flag = 0 ;
-
-    /* Wait for reception, timeout or error interrupt flag*/
-    while (!(rx_int_flag || to_int_flag|| er_int_flag))
-    {};
-
-    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
     frame_seq_nb++;
-
-    if (to_int_flag || er_int_flag)
-    {
-      /* Reset RX to properly reinitialise LDE operation. */
-      dwt_rxreset();
-
-      /*Reseting interrupt flag*/
-      to_int_flag = 0 ;
-      er_int_flag = 0 ;
-    }
-
-      /* Execute a delay between ranging exchanges. */
-    // deca_sleep(RNG_DELAY_MS);
-    // return(1);
   }
 }
 
@@ -289,7 +269,7 @@ static void resp_msg_get_ts(uint8 *ts_field, uint32 *ts)
   }
 }
 
-static void resp_msg_get_rx_ts(twr_payload_t *tx_payload, uint32 *ts)
+static void resp_msg_get_rx_ts(beacon_payload_t *tx_payload, uint32 *ts)
 {
   int i;
   *ts = 0;
@@ -299,7 +279,7 @@ static void resp_msg_get_rx_ts(twr_payload_t *tx_payload, uint32 *ts)
   }
 }
 
-static void resp_msg_get_tx_ts(twr_payload_t *tx_payload, uint32 *ts)
+static void resp_msg_get_tx_ts(beacon_payload_t *tx_payload, uint32 *ts)
 {
   int i;
   *ts = 0;
@@ -309,7 +289,7 @@ static void resp_msg_get_tx_ts(twr_payload_t *tx_payload, uint32 *ts)
   }
 }
 
-static void resp_msg_set_rx_ts(twr_payload_t *tx_payload, const uint64 ts)
+static void resp_msg_set_rx_ts(beacon_payload_t *tx_payload, const uint64 ts)
 {
   int i;
   for (i = 0; i < RESP_MSG_TS_LEN; i++)
@@ -318,7 +298,7 @@ static void resp_msg_set_rx_ts(twr_payload_t *tx_payload, const uint64 ts)
   }
 }
 
-static void resp_msg_set_tx_ts(twr_payload_t *tx_payload, const uint64 ts)
+static void resp_msg_set_tx_ts(beacon_payload_t *tx_payload, const uint64 ts)
 {
   int i;
   for (i = 0; i < RESP_MSG_TS_LEN; i++)
@@ -362,21 +342,18 @@ void ss_initiator_task_function (void * pvParameter)
   while (true)
   {
     ss_init_run();
-    vTaskDelay(twr_timer);
     if (seat_num == 0)
     {
-      twr_exchange();
       /* Delay a task for a given number of ticks */
       float reception_rate = (float) rx_count / (float) tx_count * 100;
       printf("Reception rate # : %f\r\n",reception_rate);
       printf("seat_map = %08X\r\n", seat_map);
-      for (uint8 i = 0; i<num_resp; i++)
+      for (uint8 i = 1; i<num_resp; i++)
       {
         printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
       }
-      vTaskDelay(RNG_DELAY_MS);
-    /* Tasks must be implemented to never return... */
     }
+    vTaskDelay(RNG_DELAY_MS);
   }
 }
 
@@ -439,31 +416,28 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       if(seat_num == 0) //if I am the initiator
       {
         rx_count++;
-        // //printf("Reception # : %d\r\n",rx_count);
-        // float reception_rate = (float) rx_count / (float) tx_count * 100;
-        // //printf("Reception rate # : %f\r\n",reception_rate);
-        // uint32 poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
-        // int32 rtd_init, rtd_resp;
-        // float clockOffsetRatio ;
+        uint8 rx_seat_num = rx_beacon_payload->seat_num;
+        uint32 resp_rx_ts, poll_rx_ts, resp_tx_ts;
+        int32 rtd_init, rtd_resp;
+        float clockOffsetRatio ;
 
-        // /* Retrieve poll transmission and response reception timestamps. See NOTE 4 below. */
-        // poll_tx_ts = dwt_readtxtimestamplo32();
-        // resp_rx_ts = dwt_readrxtimestamplo32();
+        /* Retrieve poll transmission and response reception timestamps. See NOTE 4 below. */
+        resp_rx_ts = dwt_readrxtimestamplo32();
 
-        // /* Read carrier integrator value and calculate clock offset ratio. See NOTE 6 below. */
-        // clockOffsetRatio = dwt_readcarrierintegrator() * (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_5 / 1.0e6) ;
+        /* Read carrier integrator value and calculate clock offset ratio. See NOTE 6 below. */
+        clockOffsetRatio = dwt_readcarrierintegrator() * (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_5 / 1.0e6) ;
 
-        // /* Get timestamps embedded in response message. */
-        // resp_msg_get_rx_ts(rx_payload, &poll_rx_ts);
-        // resp_msg_get_tx_ts(rx_payload, &resp_tx_ts);
+        /* Get timestamps embedded in response message. */
+        resp_msg_get_rx_ts(rx_payload, &poll_rx_ts);
+        resp_msg_get_tx_ts(rx_payload, &resp_tx_ts);
 
-        // /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
-        // rtd_init = resp_rx_ts - poll_tx_ts;
-        // rtd_resp = resp_tx_ts - poll_rx_ts;
+        /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
+        rtd_init = resp_rx_ts - poll_tx_ts;
+        rtd_resp = resp_tx_ts - poll_rx_ts;
 
-        // tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
-        // distance = tof * SPEED_OF_LIGHT;
-        // printf("Distance : %f\r\n",distance);
+        tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
+        distance = tof * SPEED_OF_LIGHT;
+        in_network_devices[rx_seat_num].distance = distance;
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
       }
       else //if I am not the initiator for this exchange
@@ -471,6 +445,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         uint8 rx_seat_num = rx_beacon_payload->seat_num;
         if (rx_seat_num == 0) //only the initiator can hold seat 0, so update local network data to match
         {
+          poll_rx_ts = get_rx_timestamp_u64();
           session_id = rx_beacon_payload->session_id;
           cluster_flag = rx_beacon_payload->cluster_flag;
           superframe_num = rx_beacon_payload->superframe_num;
@@ -485,13 +460,17 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
 
           if (joined==TRUE) //if already part of network respond accordingly
           {
+            uint32 resp_tx_time;
+
+            /* Compute final message transmission time. See NOTE 7 below. */
+            resp_tx_time = (poll_rx_ts + ((POLL_RX_TO_RESP_TX_DLY_UUS+seat_num*1000*2) * UUS_TO_DWT_TIME)) >> 8;
+            dwt_setdelayedtrxtime(resp_tx_time);
+
+            /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
+            resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+            
             create_message(BEACON);
-            
-            dwt_writetxdata((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), beacon_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
-            dwt_writetxfctrl((sizeof(message_header_t)+sizeof(beacon_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
-            
-            tx_timer_period = 2*(seat_num);
-            xSemaphoreGive(xSendMsgSemaphore);
+            send_message(beacon_msg, sizeof(beacon_msg));
           }
           else //if not part of network make network join request if there is space
           {
@@ -541,7 +520,6 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           create_message(JOIN_CONF);
           dwt_writetxdata(sizeof(join_conf_msg), join_conf_msg, 0); /* Zero offset in TX buffer. */
           dwt_writetxfctrl(sizeof(join_conf_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
-          // dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
           printf("Responding to %d request for SEAT %d.\r\n", tx_dest_addr[0], rx_seat_num);
           seat_map = seat_map | (1U << (rx_join_req_payload->seat_num)); //update seat map to reflect occupation of slot
           num_resp++;
@@ -573,45 +551,6 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
       }
       break;
-    case (TWR):
-      rx_twr_payload = (twr_payload_t *)rx_payload;
-      if(seat_num == 0) //if I am the initiator
-      {
-        rx_seat_num = rx_twr_payload->seat_num;
-        float reception_rate = (float) rx_count / (float) tx_count * 100;
-        uint32 poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
-        int32 rtd_init, rtd_resp;
-        float clockOffsetRatio ;
-
-        /* Retrieve poll transmission and response reception timestamps. See NOTE 4 below. */
-        poll_tx_ts = dwt_readtxtimestamplo32();
-        resp_rx_ts = dwt_readrxtimestamplo32();
-
-        /* Read carrier integrator value and calculate clock offset ratio. See NOTE 6 below. */
-        clockOffsetRatio = dwt_readcarrierintegrator() * (FREQ_OFFSET_MULTIPLIER * HERTZ_TO_PPM_MULTIPLIER_CHAN_5 / 1.0e6) ;
-
-        /* Get timestamps embedded in response message. */
-        resp_msg_get_rx_ts(rx_payload, &poll_rx_ts);
-        resp_msg_get_tx_ts(rx_payload, &resp_tx_ts);
-
-        /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
-        rtd_init = resp_rx_ts - poll_tx_ts;
-        rtd_resp = resp_tx_ts - poll_rx_ts;
-
-        tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
-        distance = tof * SPEED_OF_LIGHT;
-        in_network_devices[rx_seat_num].distance = distance;
-      }
-      else if((rx_header->dest_addr[0]==src_addr[0]) && (rx_header->dest_addr[1]==src_addr[1]))
-      {
-        create_message(TWR);
-        send_message(twr_msg, (sizeof(message_header_t)+sizeof(twr_payload_t)+2));
-      }
-      else
-      {
-        dwt_rxenable(DWT_START_RX_IMMEDIATE);
-      }      
-      break;
     default:
       printf("Invalid message type received.\r\n");
       dwt_rxenable(DWT_START_RX_IMMEDIATE);
@@ -629,24 +568,6 @@ void create_message(message_type_t msg_type)
     src_addr[0], src_addr[1],
     (uint8)msg_type
   };
-
-  if (msg_type == TWR)
-  {
-    //TODO: move this to its own function?
-    /* Get timestamp info*************************************/
-    uint32 resp_tx_time;
-
-    /* Retrieve poll reception timestamp. */
-    poll_rx_ts = get_rx_timestamp_u64();
-
-    /* Compute final message transmission time. See NOTE 7 below. */
-    resp_tx_time = (poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
-    dwt_setdelayedtrxtime(resp_tx_time);
-
-    /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
-    resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
-    /**********************************************************/
-  }
 
   switch (msg_type)
   {
@@ -667,8 +588,8 @@ void create_message(message_type_t msg_type)
         0, 0, 0, 0  //data2
       };
       /* Write all timestamps in the final message. See NOTE 8 below. */
-      // resp_msg_set_rx_ts(&beacon_payload, poll_rx_ts);
-      // resp_msg_set_tx_ts(&beacon_payload, resp_tx_ts);
+      resp_msg_set_rx_ts(&beacon_payload, poll_rx_ts);
+      resp_msg_set_tx_ts(&beacon_payload, resp_tx_ts);
 
       memcpy(beacon_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(beacon_msg + sizeof(message_header_t), &beacon_payload, sizeof(beacon_payload_t));
@@ -688,17 +609,6 @@ void create_message(message_type_t msg_type)
       
       memcpy(join_conf_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(join_conf_msg + sizeof(message_header_t), &join_conf_payload, sizeof(join_req_payload_t));
-      break;
-    case (TWR):
-      tx_msg_hdr.dest_addr[0] = tx_dest_addr[0];
-      tx_msg_hdr.dest_addr[1] = tx_dest_addr[1];
-      twr_payload_t twr_payload;
-      twr_payload.seat_num = seat_num;
-      resp_msg_set_rx_ts(&twr_payload, poll_rx_ts);
-      resp_msg_set_tx_ts(&twr_payload, resp_tx_ts);
-      
-      memcpy(twr_msg, &tx_msg_hdr, sizeof(message_header_t));
-      memcpy(twr_msg + sizeof(message_header_t), &twr_payload, sizeof(twr_payload_t));
       break;
     default:
       printf("Cannot create invalid message type.\r\n");
@@ -758,8 +668,6 @@ void send_message(uint8* out_message, uint8 message_size)
   dwt_writetxfctrl(message_size, 0, 1); /* Zero offset in TX buffer, ranging. */
   ret = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED);
 
-  //ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
-
   /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. */
   if (ret == DWT_SUCCESS)
   {
@@ -789,26 +697,6 @@ void send_message(uint8* out_message, uint8 message_size)
   }
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 }
-
-void twr_exchange()
-{
-  static int i = 1;
-  if (i < num_resp)
-  {
-    tx_dest_addr[0] = in_network_devices[i].dev_addr[0];
-    tx_dest_addr[1] = in_network_devices[i].dev_addr[1];
-    create_message(TWR);
-    dwt_writetxdata(sizeof(twr_msg), twr_msg, 0); /* Zero offset in TX buffer. */
-    dwt_writetxfctrl(sizeof(twr_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
-    dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-    i++;
-  }
-  else
-  {
-    i = 1;
-  }
-}
-
 
 /*****************************************************************************************************************************************************
 * NOTES:
