@@ -32,6 +32,7 @@
 #include "uwb_messages.h"
 
 #define APP_NAME "SS TWR INIT v1.3"
+#define MAX_NETWORK_SIZE 32
 
 /* Messaging info */
 static bool joined = FALSE;
@@ -45,16 +46,20 @@ uint8 seat_num = 0; //change to 0xff for resp
 static uint32 seat_map = 0x00000001; //change to 0xffffffff for resp
 // uint8 seat_num = 0xff;
 // static uint32 seat_map = 0xffffffff;
-static uint8 init_addr[2];
+static double local_x_pos = 0;
+static double local_y_pos = 0;
+static double local_z_pos = 0;
 
+static uint8 init_addr[2];
 static uint8 tx_dest_addr[2];
 static uint8 rx_seat_num;
-static uint8 num_resp = 1;
+static uint8 num_network_devices = 1;
+static uint8 out_of_range_ctr = 10;
 
-uwb_device_t in_network_devices[32] = {NULL};
+uwb_device_t in_network_devices[MAX_NETWORK_SIZE] = {NULL};
 
 /* Inter-ranging delay period, in milliseconds. */
-#define RNG_DELAY_MS 300
+#define RNG_DELAY_MS 200
 
 /* Frames used in the ranging process. See NOTE 1,2 below. */
 //empty now
@@ -134,6 +139,7 @@ static uint32 tx_timer_period = 100; //set to 100ms as default
 
 /*Relocated timestamp variables*/
 uint32 poll_tx_ts;
+void manage_connections();
 
 
 /*! ------------------------------------------------------------------------------------------------------------------
@@ -344,15 +350,40 @@ void ss_initiator_task_function (void * pvParameter)
     ss_init_run();
     if (seat_num == 0)
     {
-      /* Delay a task for a given number of ticks */
-      float reception_rate = (float) rx_count / (float) tx_count * 100;
+      //manage_connections();
+      float reception_rate = (float) rx_count / (float) tx_count * 100 / (num_network_devices-1);
+      // if ((frame_seq_nb%2) == 0)
+      // {
       printf("Reception rate # : %f\r\n",reception_rate);
       printf("seat_map = %08X\r\n", seat_map);
-      for (uint8 i = 1; i<num_resp; i++)
+      printf("num_network_devices = %d\r\n", num_network_devices);
+      for (uint8 i = 1; i<MAX_NETWORK_SIZE; i++)
       {
-        printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
+        if ((seat_map & (1U << i)) != 0) 
+        {
+          if(in_network_devices[i].timeout_ctr == 0) //if device has not respoonded to last 11? beacons
+          {
+            seat_map = seat_map ^ (1U << i); //remove from seat_map
+            num_network_devices--;
+            printf("SEAT %d unresponsive. Removing from network.\r\n", i);
+          }
+          else
+          {
+            in_network_devices[i].timeout_ctr--;
+            printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
+          }
+        }
       }
+      // }
+      // else
+      // {
+      //   for (uint8 i = num_network_devices/2; i<num_network_devices; i++)
+      //   {
+      //     printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
+      //   }
+      // }
     }
+    //manage_connections();
     vTaskDelay(RNG_DELAY_MS);
   }
 }
@@ -417,6 +448,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       {
         rx_count++;
         uint8 rx_seat_num = rx_beacon_payload->seat_num;
+        in_network_devices[rx_seat_num].timeout_ctr = out_of_range_ctr;
         uint32 resp_rx_ts, poll_rx_ts, resp_tx_ts;
         int32 rtd_init, rtd_resp;
         float clockOffsetRatio ;
@@ -463,7 +495,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
             uint32 resp_tx_time;
 
             /* Compute final message transmission time. See NOTE 7 below. */
-            resp_tx_time = (poll_rx_ts + ((POLL_RX_TO_RESP_TX_DLY_UUS+seat_num*1000*2) * UUS_TO_DWT_TIME)) >> 8;
+            resp_tx_time = (poll_rx_ts + ((seat_num*2000) * UUS_TO_DWT_TIME)) >> 8;
             dwt_setdelayedtrxtime(resp_tx_time);
 
             /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
@@ -522,10 +554,11 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           dwt_writetxfctrl(sizeof(join_conf_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
           printf("Responding to %d request for SEAT %d.\r\n", tx_dest_addr[0], rx_seat_num);
           seat_map = seat_map | (1U << (rx_join_req_payload->seat_num)); //update seat map to reflect occupation of slot
-          num_resp++;
+          num_network_devices++;
           in_network_devices[rx_seat_num].dev_addr[0] = tx_dest_addr[0];
           in_network_devices[rx_seat_num].dev_addr[1] = tx_dest_addr[1];
           in_network_devices[rx_seat_num].seat_num = rx_seat_num;
+          in_network_devices[rx_seat_num].timeout_ctr = out_of_range_ctr;
           tx_timer_period = 10;
           xSemaphoreGive(xSendMsgSemaphore);
             //send
@@ -697,6 +730,27 @@ void send_message(uint8* out_message, uint8 message_size)
   }
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 }
+
+void manage_connections()
+{
+  for (int i = 1; i<MAX_NETWORK_SIZE; i++)
+  {
+    if ((seat_map & (1U << i)) != 0) //if occupied seat
+    {
+      if(in_network_devices[i].timeout_ctr == 0) //if device has not respoonded to last 11? beacons
+      {
+        seat_map = seat_map ^ (1U << i); //remove from seat_map
+        num_network_devices--;
+        printf("SEAT %d unresponsive. Removing from network.\r\n", i);
+      }
+      else
+      {
+        in_network_devices[i].timeout_ctr--;
+      }
+    }
+  }
+}
+
 
 /*****************************************************************************************************************************************************
 * NOTES:
