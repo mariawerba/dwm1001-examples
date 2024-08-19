@@ -31,9 +31,9 @@ typedef struct
     uint32 seat_map;
     uint8 rx_ts[4];
     uint8 tx_ts[4];
-    double x_pos;
-    double y_pos;
-    double z_pos;
+    int x_pos;
+    int y_pos;
+    int z_pos;
     uint8 data_type;
     uint8 data1[4];
     uint8 data2[4];
@@ -56,7 +56,7 @@ typedef struct
     uint8 seat_num;
     uint8 timeout_ctr;
     double distance;
-    double x_pos;
-    double y_pos;
-    double z_pos;
+    int x_pos;
+    int y_pos;
+    int z_pos;
 } uwb_device_t;

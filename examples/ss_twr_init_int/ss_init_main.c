@@ -42,13 +42,13 @@ static uint8 src_addr[2];
 static uint8 session_id;
 static uint8 cluster_flag;
 static uint8 superframe_num;
-uint8 seat_num = 0; //change to 0xff for resp
-static uint32 seat_map = 0x00000001; //change to 0xffffffff for resp
-// uint8 seat_num = 0xff;
-// static uint32 seat_map = 0xffffffff;
-static double local_x_pos = 0;
-static double local_y_pos = 0;
-static double local_z_pos = 0;
+// uint8 seat_num = 0; //change to 0xff for resp
+// static uint32 seat_map = 0x00000001; //change to 0xffffffff for resp
+uint8 seat_num = 0xff;
+static uint32 seat_map = 0xffffffff;
+static int local_x_pos = 3;
+static int local_y_pos = 4;
+static int local_z_pos = 0;
 
 static uint8 init_addr[2];
 static uint8 tx_dest_addr[2];
@@ -350,13 +350,22 @@ void ss_initiator_task_function (void * pvParameter)
     ss_init_run();
     if (seat_num == 0)
     {
-      //manage_connections();
       float reception_rate = (float) rx_count / (float) tx_count * 100 / (num_network_devices-1);
-      // if ((frame_seq_nb%2) == 0)
-      // {
-      printf("Reception rate # : %f\r\n",reception_rate);
-      printf("seat_map = %08X\r\n", seat_map);
-      printf("num_network_devices = %d\r\n", num_network_devices);
+      if (num_network_devices > 15)
+      {
+        if ((frame_seq_nb%2) == 0)
+        {
+          printf("Reception rate # : %f\r\n",reception_rate);
+          printf("seat_map = %08X\r\n", seat_map);
+          printf("num_network_devices = %d\r\n", num_network_devices);
+        }
+      }
+      else
+      {
+        printf("Reception rate # : %f\r\n",reception_rate);
+        printf("seat_map = %08X\r\n", seat_map);
+        printf("num_network_devices = %d\r\n", num_network_devices);
+      }
       for (uint8 i = 1; i<MAX_NETWORK_SIZE; i++)
       {
         if ((seat_map & (1U << i)) != 0) 
@@ -370,18 +379,30 @@ void ss_initiator_task_function (void * pvParameter)
           else
           {
             in_network_devices[i].timeout_ctr--;
-            printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
+            if (num_network_devices > 15)
+            {
+              if ((frame_seq_nb%2) == 0)
+              {
+                if (i < 16)
+                {
+                  printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+                }
+              }
+              else
+              {
+                if (i > 15)
+                {
+                  printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+                }
+              }
+            }
+            else
+            {
+              printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+            }
           }
         }
       }
-      // }
-      // else
-      // {
-      //   for (uint8 i = num_network_devices/2; i<num_network_devices; i++)
-      //   {
-      //     printf("Distance to SEAT %d: %f\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance);
-      //   }
-      // }
     }
     //manage_connections();
     vTaskDelay(RNG_DELAY_MS);
@@ -468,8 +489,11 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         rtd_resp = resp_tx_ts - poll_rx_ts;
 
         tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
-        distance = tof * SPEED_OF_LIGHT;
+        distance = tof * SPEED_OF_LIGHT - 0.5;
         in_network_devices[rx_seat_num].distance = distance;
+        in_network_devices[rx_seat_num].x_pos = rx_beacon_payload->x_pos;
+        in_network_devices[rx_seat_num].y_pos = rx_beacon_payload->y_pos;
+        in_network_devices[rx_seat_num].z_pos = rx_beacon_payload->z_pos;
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
       }
       else //if I am not the initiator for this exchange
@@ -561,9 +585,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           in_network_devices[rx_seat_num].timeout_ctr = out_of_range_ctr;
           tx_timer_period = 10;
           xSemaphoreGive(xSendMsgSemaphore);
-            //send
         }
-      //send_message(beacon_msg, (sizeof(message_header_t)+sizeof(beacon_payload_t)+2));
       }
       else
       {
@@ -616,9 +638,9 @@ void create_message(message_type_t msg_type)
         seat_map,
         0, 0, 0, 0, //rx timestamp
         0, 0, 0, 0, //tx timestamp
-        0,          //data_type
-        0, 0, 0, 0, //data1
-        0, 0, 0, 0  //data2
+        local_x_pos,
+        local_y_pos,
+        local_z_pos
       };
       /* Write all timestamps in the final message. See NOTE 8 below. */
       resp_msg_set_rx_ts(&beacon_payload, poll_rx_ts);
