@@ -75,7 +75,6 @@ TaskHandle_t  ss_initiator_task_handle;   /**< Reference to SS TWR Initiator Fre
 extern void ss_initiator_task_function (void * pvParameter);
 TaskHandle_t  led_toggle_task_handle;   /**< Reference to LED0 toggling FreeRTOS task. */
 TimerHandle_t led_toggle_timer_handle;  /**< Reference to LED1 toggling FreeRTOS timer. */
-TaskHandle_t process_uart_rx_handle;
 
 extern void create_tasks_and_resources(); //this creates a sempahore and task defined in ss_init_main
 extern uint8 local_seat_num;
@@ -113,19 +112,6 @@ static void led_toggle_timer_callback (void * pvParameter)
   LEDS_INVERT(BSP_LED_1_MASK);
 }
 
-static void process_uart_rx_function (void * pvParameter)
-{
-  UNUSED_PARAMETER(pvParameter);
-  while(true)
-  {
-    if ( deca_uart_rx_data_ready() )
-    {
-      process_uartmsg();
-    }
-    printf("in tha uart \r\n");
-    vTaskDelay(TASK_DELAY);
-  }
-}
 #else
 
   extern int ss_init_run(void);
@@ -143,7 +129,6 @@ int main(void)
   #ifdef USE_FREERTOS
     /* Create task for LED0 blinking with priority set to 2 */
     UNUSED_VARIABLE(xTaskCreate(led_toggle_task_function, "LED0", configMINIMAL_STACK_SIZE + 200, NULL, 2, &led_toggle_task_handle));
-    //UNUSED_VARIABLE(xTaskCreate(process_uart_rx_function, "UART", configMINIMAL_STACK_SIZE + 500, NULL, 3, &process_uart_rx_handle));
 
     /* Start timer for LED1 blinking */
     led_toggle_timer_handle = xTimerCreate( "LED1", TIMER_PERIOD, pdTRUE, NULL, led_toggle_timer_callback);
@@ -160,7 +145,7 @@ int main(void)
 	
   /*Initialization UART*/
   boUART_Init ();
-  printf("Singled Sided Two Way Ranging Initiator with Interrupt Example \r\n");
+  printf("Singled Sided Two Way Ranging\r\n");
 	
   /* Reset DW1000 */
   reset_DW1000(); 
@@ -184,12 +169,9 @@ int main(void)
   /* Initialization of the DW1000 interrupt*/
   /* Callback are defined in ss_init_main.c */
   dwt_setcallbacks(NULL, &rx_ok_cb, &rx_to_cb, &rx_err_cb);
-  //dwt_setcallbacks(&tx_conf_cb, &rx_ok_cb, NULL, &rx_err_cb);
 
   /* Enable wanted interrupts (TX confirmation, RX good frames, RX timeouts and RX errors). */
-  // dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RXPTO | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
   dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RXPTO | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
-  //dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFSL | DWT_INT_SFDT, 1);
 
   /* Apply default antenna delay value. See NOTE 2 below. */
   dwt_setrxantennadelay(RX_ANT_DLY);
@@ -198,19 +180,23 @@ int main(void)
   /* Set preamble timeout for expected frames. See NOTE 3 below. */
   //dwt_setpreambledetecttimeout(0); // PRE_TIMEOUT
           
-  /* Set expected response's delay and timeout. 
-  * As this example only handles one incoming frame with always the same delay and timeout, those values can be set here once for all. */
+  /* Set expected response's delay and timeout. */
   dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
   dwt_setrxtimeout(65000); // Maximum value timeout with DW1000 is 65ms, setting to 0 means timeout is disabled
 
-  set_local_dev_addr(); // Sets source address in outgoing messages in ss_init_main.c
-  dwt_setleds(DWT_LEDS_ENABLE); //this was somewhere else initially but it might as well be here
+  set_local_dev_addr(); //Sets source address used in outgoing messages in ss_init_main.c
+  dwt_setleds(DWT_LEDS_ENABLE); //this enables the TX/RX LEDs (yellow LED is TX, blinking red LED is RX)
   create_tasks_and_resources();
 
-  if (local_seat_num != 0)
+  if (local_seat_num != 0) //checks configuration in ss_init_main.c for role, only an initiator can hold seat 0
   {
-    dwt_rxenable(DWT_START_RX_IMMEDIATE);
-  }  
+    printf("Role: Responder \r\n");
+    dwt_rxenable(DWT_START_RX_IMMEDIATE); //listen for beacons from the initiator
+  }
+  else
+  {
+    printf("Role: Initiator \r\n");
+  }
 
   //-------------dw1000  ini------end---------------------------	
   // IF WE GET HERE THEN THE LEDS WILL BLINK

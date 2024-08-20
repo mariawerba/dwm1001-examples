@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 import threading
+import math
 
 
 ser = serial.Serial('COM9', 115200, timeout=1)
@@ -72,11 +73,9 @@ def read_uart():
         except KeyboardInterrupt:
             ser.close()
             quit()
-            break
         except Exception as e:
             print(f"Error: {e}")
             ser.close()
-            quit()
 
 
 def update_plot():
@@ -96,8 +95,9 @@ def update_plot():
             ax.scatter(x_values, y_values, color='blue')
             data.sort(key=lambda item: item[3])
             location = trilaterate3D(data)
-            ax.plot(location[0], location[1], 'ro')  # 'ro' means red circle
-            ax.text(location[0] + 0.1, location[1] + 0.1, f'({round(location[0],2)}, {round(location[1],2)})', fontsize=9)
+            if ((math.isnan(location[0])==False)  and  (math.isnan(location[1])==False)):
+                ax.plot(location[0], location[1], 'ro')  # 'ro' means red circle
+                ax.text(location[0] + 0.1, location[1] + 0.1, f'({round(location[0],2)}, {round(location[1],2)})', fontsize=9)
             for i, (x, y) in enumerate(zip(x_values, y_values)):
                 ax.text(x + 0.1, y + 0.1, f'({x}, {y})', fontsize=9)
             plt.draw()

@@ -1,15 +1,8 @@
 /*! ----------------------------------------------------------------------------
 *  @file    ss_init_main.c
-*  @brief   Single-sided two-way ranging (SS TWR) initiator example code
-*
-*           This is a simple code example which acts as the initiator in a SS TWR distance measurement exchange. This application sends a "poll"
-*           frame (recording the TX time-stamp of the poll), after which it waits for a "response" message from the "DS TWR responder" example
-*           code (companion to this application) to complete the exchange. The response message contains the remote responder's time-stamps of poll
-*           RX, and response TX. With this data and the local time-stamps, (of poll TX and response RX), this example application works out a value
-*           for the time-of-flight over-the-air and, thus, the estimated distance between the two devices, which it writes to the LCD.
-*
-*
-*           Notes at the end of this file, expand on the inline comments.
+*  @brief   Single-sided two-way ranging (SS TWR) Initiator/Responder
+
+*           Notes at the end of this file are left over from Decawave.
 * 
 * @attention
 *
@@ -31,12 +24,23 @@
 #include "semphr.h"
 #include "uwb_messages.h"
 
+
+
 #define MAX_NETWORK_SIZE 32
 #define OUT_OF_RANGE_LIMIT 10
 #define DISTANCE_OFFSET 0.5f //should be tested more, this is an approximation for close ranging
+
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 200
 #define RESP_MSG_TS_LEN 4 //timestamp length
+
+/* UWB microsecond (uus) to device time unit (dtu, around 15.65 ps) conversion factor.
+* 1 uus = 512 / 499.2 �s and 1 �s = 499.2 * 128 dtu. */
+#define UUS_TO_DWT_TIME 65536
+
+/* Speed of light in air, in metres per second. */
+#define SPEED_OF_LIGHT 299702547
+
 
 /* Messaging info */
 static bool joined = FALSE;
@@ -49,7 +53,7 @@ static uint8 superframe_num; //unused
 static uint32 seat_map = 0x00000001;
 uint8 local_seat_num = 0; //change to something != 0 to program as a responder
 // uint8 local_seat_num = 0xff;
-static int local_x_pos = 3;
+static int local_x_pos = 0;
 static int local_y_pos = 4;
 static int local_z_pos = 0;
 
@@ -60,6 +64,8 @@ static uint8 num_network_devices = 1;
 
 uwb_device_t in_network_devices[MAX_NETWORK_SIZE] = {NULL};
 
+/* Timestamp variables*/
+uint32 poll_tx_ts;
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 
@@ -74,14 +80,7 @@ static uint8 rx_buffer[MAX_RX_BUF_LEN];
 /* Hold copy of status register state here for reference so that it can be examined at a debug breakpoint. */
 static uint32 status_reg = 0;
 
-/* UWB microsecond (uus) to device time unit (dtu, around 15.65 ps) conversion factor.
-* 1 uus = 512 / 499.2 �s and 1 �s = 499.2 * 128 dtu. */
-#define UUS_TO_DWT_TIME 65536
-
-/* Speed of light in air, in metres per second. */
-#define SPEED_OF_LIGHT 299702547
-
-/* Hold copies of computed time of flight and distance here for reference so that it can be examined at a debug breakpoint. */
+/* Computed time of flight and distance */
 static double tof;
 static double distance;
 
@@ -100,11 +99,12 @@ static volatile int er_int_flag = 0 ; // Error interrupt flag
 static volatile int tx_count = 0 ; // Successful transmit counter
 static volatile int rx_count = 0 ; // Successful receive counter
 
-/*Message Buffers*/
+/* TX Message Buffers*/
 static uint8 beacon_msg[sizeof(message_header_t)+sizeof(beacon_payload_t)+2] = {0};
 static uint8 join_req_msg[sizeof(message_header_t)+sizeof(join_req_payload_t)+2] = {0};
 static uint8 join_conf_msg[sizeof(message_header_t)+sizeof(join_conf_payload_t)+2] = {0};
 
+/* RX Message Pointers*/
 static message_header_t *rx_header;
 static uint8 *rx_payload;
 static beacon_payload_t *rx_beacon_payload;
@@ -119,20 +119,6 @@ TaskHandle_t tx_timer_handle;
 void send_timed_message(void * pvParameter);
 static uint32 tx_timer_period = 100; //set to 100ms as default
 
-/*Responder constants*/
-// Not enough time to write the data so TX timeout extended for nRF operation.
-// Might be able to get away with 800 uSec but would have to test
-// See note 6 at the end of this file
-#define POLL_RX_TO_RESP_TX_DLY_UUS  1100
-
-/* This is the delay from the end of the frame transmission to the enable of the receiver, as programmed for the DW1000's wait for response feature. */
-#define RESP_TX_TO_FINAL_RX_DLY_UUS 500
-
-/*Relocated timestamp variables*/
-uint32 poll_tx_ts;
-void manage_connections();
-
-
 /*! ------------------------------------------------------------------------------------------------------------------
 * @fn main()
 *
@@ -146,7 +132,7 @@ int ss_init_run(void)
 {
   if (local_seat_num == 0)
   {
-    /* Loop forever initiating ranging exchanges. */
+    /* Initiate ranging exchanges. */
 
     /* Write frame data to DW1000 and prepare transmission. See NOTE 3 below. */
     create_message(BEACON);
@@ -156,8 +142,8 @@ int ss_init_run(void)
     /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
     * set by dwt_setrxaftertxdelay() has elapsed. */
     dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
-    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_TXFRS)))
-    { };
+    /* Poll status register */
+    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_TXFRS))) { };
 
     poll_tx_ts = dwt_readtxtimestamplo32();
 
@@ -226,7 +212,7 @@ void rx_err_cb(const dwt_cb_data_t *cb_data)
 /*! ------------------------------------------------------------------------------------------------------------------
 * @fn tx_conf_cb()
 *
-* @brief Callback to process TX confirmation events
+* @brief Callback to process TX confirmation events. This callback is unused as the TX interrupt has been disabled in the initialization process in main.c
 *
 * @param  cb_data  callback data
 *
@@ -359,7 +345,7 @@ void ss_initiator_task_function (void * pvParameter)
       {
         if ((seat_map & (1U << i)) != 0) 
         {
-          if(in_network_devices[i].timeout_ctr == 0) //if device has not respoonded to last 11? beacons
+          if(in_network_devices[i].timeout_ctr == 0) //if device has not responded to several beacons
           {
             seat_map = seat_map ^ (1U << i); //remove from seat_map
             num_network_devices--;
@@ -514,7 +500,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
 
           num_network_devices = 0;
           uint32 copy_seat_map = seat_map;
-          while(copy_seat_map)
+          while(copy_seat_map) //update num_network_devices
           {
             num_network_devices += copy_seat_map & 0x1;
             copy_seat_map >>= 1;
@@ -594,8 +580,8 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
               local_seat_num = open_seat; //set local seat number to lowest open slot for join request
 
               create_message(JOIN_REQ);
-              dwt_writetxdata((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), join_req_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
-              dwt_writetxfctrl((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), 0, 1); /* Zero offset in TX buffer, ranging. */
+              dwt_writetxdata(sizeof(join_req_msg), join_req_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
+              dwt_writetxfctrl(sizeof(join_req_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
               
               tx_timer_period = 65;
               xSemaphoreGive(xSendMsgSemaphore);
@@ -717,9 +703,6 @@ void create_message(message_type_t msg_type)
   }
 }
 
-
-
-
 void send_timed_message(void * pvParameter)
 {
   UNUSED_PARAMETER(pvParameter);
@@ -743,15 +726,6 @@ void send_timed_message(void * pvParameter)
       }
       else
       {
-        /* If we end up in here then we have not succeded in transmitting the packet we sent up.
-        POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
-        For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
-        frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
-        Knowing the exact time when the responder is going to send its response is vital for time of flight
-        calculation. The specification of the time of respnse must allow the processor enough time to do its
-        calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
-        */
-
         /* Reset RX to properly reinitialise LDE operation. */
         dwt_rxreset();
       }
@@ -778,41 +752,11 @@ void send_message(uint8* out_message, uint8 message_size)
   }
   else
   {
-    /* If we end up in here then we have not succeded in transmitting the packet we sent up.
-    POLL_RX_TO_RESP_TX_DLY_UUS is a critical value for porting to different processors.
-    For slower platforms where the SPI is at a slower speed or the processor is operating at a lower
-    frequency (Comparing to STM32F, SPI of 18MHz and Processor internal 72MHz)this value needs to be increased.
-    Knowing the exact time when the responder is going to send its response is vital for time of flight
-    calculation. The specification of the time of respnse must allow the processor enough time to do its
-    calculations and put the packet in the Tx buffer. So more time is required for a slower system(processor).
-    */
-
     /* Reset RX to properly reinitialise LDE operation. */
     dwt_rxreset();
   }
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 }
-
-void manage_connections()
-{
-  for (int i = 1; i<MAX_NETWORK_SIZE; i++)
-  {
-    if ((seat_map & (1U << i)) != 0) //if occupied seat
-    {
-      if(in_network_devices[i].timeout_ctr == 0) //if device has not respoonded to last 11? beacons
-      {
-        seat_map = seat_map ^ (1U << i); //remove from seat_map
-        num_network_devices--;
-        printf("SEAT %d unresponsive. Removing from network.\r\n", i);
-      }
-      else
-      {
-        in_network_devices[i].timeout_ctr--;
-      }
-    }
-  }
-}
-
 
 /*****************************************************************************************************************************************************
 * NOTES:
@@ -850,5 +794,18 @@ void manage_connections()
 * 6. The use of the carrier integrator value to correct the TOF calculation, was added Feb 2017 for v1.3 of this example.  This significantly
 *     improves the result of the SS-TWR where the remote responder unit's clock is a number of PPM offset from the local inmitiator unit's clock.
 *     As stated in NOTE 2 a fixed offset in range will be seen unless the antenna delsy is calibratred and set correctly.
+* 7. As we want to send final TX timestamp in the final message, we have to compute it in advance instead of relying on the reading of DW1000
+*    register. Timestamps and delayed transmission time are both expressed in device time units so we just have to add the desired response delay to
+*    response RX timestamp to get final transmission time. The delayed transmission time resolution is 512 device time units which means that the
+*    lower 9 bits of the obtained value must be zeroed. This also allows to encode the 40-bit value in a 32-bit words by shifting the all-zero lower
+*    8 bits.
+* 8. In this operation, the high order byte of each 40-bit timestamps is discarded. This is acceptable as those time-stamps are not separated by
+*    more than 2**32 device time units (which is around 67 ms) which means that the calculation of the round-trip delays (needed in the
+*    time-of-flight computation) can be handled by a 32-bit subtraction.
+* 9. dwt_writetxdata() takes the full size of the message as a parameter but only copies (size - 2) bytes as the check-sum at the end of the frame is
+*    automatically appended by the DW1000. This means that our variable could be two bytes shorter without losing any data (but the sizeof would not
+*    work anymore then as we would still have to indicate the full length of the frame to dwt_writetxdata()).
+*10. The user is referred to DecaRanging ARM application (distributed with EVK1000 product) for additional practical example of usage, and to the
+*    DW1000 API Guide for more details on the DW1000 driver functions.
 *
 ****************************************************************************************************************************************************/
