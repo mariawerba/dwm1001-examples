@@ -31,48 +31,39 @@
 #include "semphr.h"
 #include "uwb_messages.h"
 
-#define APP_NAME "SS TWR INIT v1.3"
 #define MAX_NETWORK_SIZE 32
+#define OUT_OF_RANGE_LIMIT 10
+#define DISTANCE_OFFSET 0.5f //should be tested more, this is an approximation for close ranging
+/* Inter-ranging delay period, in milliseconds. */
+#define RNG_DELAY_MS 200
+#define RESP_MSG_TS_LEN 4 //timestamp length
 
 /* Messaging info */
 static bool joined = FALSE;
-static uint8 fctrl[] = {0x41, 0x88}; //default, means something in IEEE
-static uint8 panid[] = {0xCA, 0xDE}; //default
-static uint8 src_addr[2];
-static uint8 session_id;
-static uint8 cluster_flag;
-static uint8 superframe_num;
-// uint8 seat_num = 0; //change to 0xff for resp
-// static uint32 seat_map = 0x00000001; //change to 0xffffffff for resp
-uint8 seat_num = 0xff;
-static uint32 seat_map = 0xffffffff;
+static uint8 fctrl[] = {0x41, 0x88}; //default IEEE
+static uint8 panid[] = {0xCA, 0xDE};
+static uint8 local_dev_addr[2];
+static uint8 session_id; //unused
+static uint8 cluster_flag; //unused
+static uint8 superframe_num; //unused
+static uint32 seat_map = 0x00000001;
+uint8 local_seat_num = 0; //change to something != 0 to program as a responder
+// uint8 local_seat_num = 0xff;
 static int local_x_pos = 3;
 static int local_y_pos = 4;
 static int local_z_pos = 0;
 
-static uint8 init_addr[2];
-static uint8 tx_dest_addr[2];
+static uint8 init_addr[2]; //local copy of initiator address
+static uint8 tx_dest_addr[2]; 
 static uint8 rx_seat_num;
 static uint8 num_network_devices = 1;
-static uint8 out_of_range_ctr = 10;
 
 uwb_device_t in_network_devices[MAX_NETWORK_SIZE] = {NULL};
 
-/* Inter-ranging delay period, in milliseconds. */
-#define RNG_DELAY_MS 200
-
-/* Frames used in the ranging process. See NOTE 1,2 below. */
-//empty now
-
-/* Length of the common part of the message (up to and including the function code, see NOTE 1 below). */
-//empty now
-
-/* Indexes to access some of the fields in the frames defined above. */
-#define RESP_MSG_TS_LEN 4
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 
-/* Frame sequence number, incremented after each transmission. */
+/* Frame sequence number, incremented after each initiator beacon transmission. */
 static uint8 frame_seq_nb = 0;
 
 /* Buffer to store received response message.
@@ -153,7 +144,7 @@ void manage_connections();
 */
 int ss_init_run(void)
 {
-  if (seat_num == 0)
+  if (local_seat_num == 0)
   {
     /* Loop forever initiating ranging exchanges. */
 
@@ -204,7 +195,7 @@ void rx_to_cb(const dwt_cb_data_t *cb_data)
 {
   to_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #2 */
-  if (seat_num != 0)
+  if (local_seat_num != 0)
   {
     dwt_rxreset();
     dwt_rxenable(DWT_START_RX_IMMEDIATE);
@@ -225,7 +216,7 @@ void rx_err_cb(const dwt_cb_data_t *cb_data)
   er_int_flag = 1 ;
   /* TESTING BREAKPOINT LOCATION #3 */
   printf("Transmission Error : may receive package from different UWB device\r\n");
-  if (seat_num != 0)
+  if (local_seat_num != 0)
   {
     dwt_rxreset();
     dwt_rxenable(DWT_START_RX_IMMEDIATE);
@@ -348,23 +339,21 @@ void ss_initiator_task_function (void * pvParameter)
   while (true)
   {
     ss_init_run();
-    if (seat_num == 0)
+    if (local_seat_num == 0)
     {
       float reception_rate = (float) rx_count / (float) tx_count * 100 / (num_network_devices-1);
-      if (num_network_devices > 15)
+      if (num_network_devices > MAX_NETWORK_SIZE/2)
       {
-        if ((frame_seq_nb%2) == 0)
+        if ((frame_seq_nb % 2) == 0)
         {
           printf("Reception rate # : %f\r\n",reception_rate);
           printf("seat_map = %08X\r\n", seat_map);
-          printf("num_network_devices = %d\r\n", num_network_devices);
         }
       }
       else
       {
         printf("Reception rate # : %f\r\n",reception_rate);
         printf("seat_map = %08X\r\n", seat_map);
-        printf("num_network_devices = %d\r\n", num_network_devices);
       }
       for (uint8 i = 1; i<MAX_NETWORK_SIZE; i++)
       {
@@ -379,42 +368,41 @@ void ss_initiator_task_function (void * pvParameter)
           else
           {
             in_network_devices[i].timeout_ctr--;
-            if (num_network_devices > 15)
+            if (num_network_devices > MAX_NETWORK_SIZE/2)
             {
-              if ((frame_seq_nb%2) == 0)
+              if ((frame_seq_nb % 2) == 0)
               {
-                if (i < 16)
+                if (i < MAX_NETWORK_SIZE/2)
                 {
-                  printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+                  printf("SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
                 }
               }
               else
               {
-                if (i > 15)
+                if (i >= MAX_NETWORK_SIZE/2)
                 {
-                  printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+                  printf("SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
                 }
               }
             }
             else
             {
-              printf("Distance to SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
+              printf("SEAT %d: %f, (%d, %d, %d)\r\n", in_network_devices[i].seat_num, in_network_devices[i].distance, in_network_devices[i].x_pos, in_network_devices[i].y_pos, in_network_devices[i].z_pos);
             }
           }
         }
       }
     }
-    //manage_connections();
     vTaskDelay(RNG_DELAY_MS);
   }
 }
 
-void set_src_addr()
+void set_local_dev_addr()
 {
   uint32 unique_id = dwt_getpartid();
   for (int i = 0; i < 2; i++)
   {
-    src_addr[i] = (unique_id >> (i*8)) & 0xFF; //extract lower 16 bits
+    local_dev_addr[i] = (unique_id >> (i*8)) & 0xFF; //extract lower 16 bits
   }
 }
 
@@ -465,11 +453,11 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
   {
     case (BEACON):
       rx_beacon_payload = (beacon_payload_t *)rx_payload;
-      if(seat_num == 0) //if I am the initiator
+      if(local_seat_num == 0) //if I am the initiator
       {
         rx_count++;
         uint8 rx_seat_num = rx_beacon_payload->seat_num;
-        in_network_devices[rx_seat_num].timeout_ctr = out_of_range_ctr;
+        in_network_devices[rx_seat_num].timeout_ctr = OUT_OF_RANGE_LIMIT;
         uint32 resp_rx_ts, poll_rx_ts, resp_tx_ts;
         int32 rtd_init, rtd_resp;
         float clockOffsetRatio ;
@@ -489,7 +477,11 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
         rtd_resp = resp_tx_ts - poll_rx_ts;
 
         tof = ((rtd_init - rtd_resp * (1.0f - clockOffsetRatio)) / 2.0f) * DWT_TIME_UNITS; // Specifying 1.0f and 2.0f are floats to clear warning 
-        distance = tof * SPEED_OF_LIGHT - 0.5;
+        distance = tof * SPEED_OF_LIGHT - DISTANCE_OFFSET;
+        if (distance < 0)
+        {
+          distance = 0;
+        }
         in_network_devices[rx_seat_num].distance = distance;
         in_network_devices[rx_seat_num].x_pos = rx_beacon_payload->x_pos;
         in_network_devices[rx_seat_num].y_pos = rx_beacon_payload->y_pos;
@@ -499,9 +491,15 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       else //if I am not the initiator for this exchange
       {
         uint8 rx_seat_num = rx_beacon_payload->seat_num;
+        if (rx_seat_num == local_seat_num)
+        {
+          joined = FALSE;
+        }
+        
         if (rx_seat_num == 0) //only the initiator can hold seat 0, so update local network data to match
         {
           poll_rx_ts = get_rx_timestamp_u64();
+          frame_seq_nb = rx_header->seq_nb;
           session_id = rx_beacon_payload->session_id;
           cluster_flag = rx_beacon_payload->cluster_flag;
           superframe_num = rx_beacon_payload->superframe_num;
@@ -514,19 +512,67 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
             joined = FALSE;
           }
 
+          num_network_devices = 0;
+          uint32 copy_seat_map = seat_map;
+          while(copy_seat_map)
+          {
+            num_network_devices += copy_seat_map & 0x1;
+            copy_seat_map >>= 1;
+          }
+
           if (joined==TRUE) //if already part of network respond accordingly
           {
             uint32 resp_tx_time;
+            uint32 timeslot_delay;
+            if (num_network_devices > MAX_NETWORK_SIZE/2)
+            {
+              if (((frame_seq_nb % 2) == 0) && (local_seat_num < MAX_NETWORK_SIZE/2))
+              {
+                timeslot_delay = local_seat_num*2;
 
-            /* Compute final message transmission time. See NOTE 7 below. */
-            resp_tx_time = (poll_rx_ts + ((seat_num*2000) * UUS_TO_DWT_TIME)) >> 8;
-            dwt_setdelayedtrxtime(resp_tx_time);
+                /* Compute final message transmission time. See NOTE 7 below. */
+                resp_tx_time = (poll_rx_ts + ((1000*timeslot_delay) * UUS_TO_DWT_TIME)) >> 8;
+                dwt_setdelayedtrxtime(resp_tx_time);
 
-            /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
-            resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
-            
-            create_message(BEACON);
-            send_message(beacon_msg, sizeof(beacon_msg));
+                /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
+                resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+                
+                create_message(BEACON);
+                send_message(beacon_msg, sizeof(beacon_msg));                
+              }
+              else if (((frame_seq_nb % 2) == 1) && (local_seat_num >= MAX_NETWORK_SIZE/2))
+              {
+                timeslot_delay = (local_seat_num - MAX_NETWORK_SIZE/2 + 1)*2;
+
+                /* Compute final message transmission time. See NOTE 7 below. */
+                resp_tx_time = (poll_rx_ts + ((1000*timeslot_delay) * UUS_TO_DWT_TIME)) >> 8;
+                dwt_setdelayedtrxtime(resp_tx_time);
+
+                /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
+                resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+                
+                create_message(BEACON);
+                send_message(beacon_msg, sizeof(beacon_msg));
+              }
+              else
+              {
+                dwt_rxenable(DWT_START_RX_IMMEDIATE);
+              }
+            }
+            else
+            {
+              timeslot_delay = local_seat_num*2;
+
+              /* Compute final message transmission time. See NOTE 7 below. */
+              resp_tx_time = (poll_rx_ts + ((1000*timeslot_delay) * UUS_TO_DWT_TIME)) >> 8;
+              dwt_setdelayedtrxtime(resp_tx_time);
+
+              /* Response TX timestamp is the transmission time we programmed plus the antenna delay. */
+              resp_tx_ts = (((uint64)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+              
+              create_message(BEACON);
+              send_message(beacon_msg, sizeof(beacon_msg));
+            }
           }
           else //if not part of network make network join request if there is space
           {
@@ -545,7 +591,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
                 mask <<= 1;
                 open_seat++;
               }
-              seat_num = open_seat; //set local seat number to lowest open slot for jjoin request
+              local_seat_num = open_seat; //set local seat number to lowest open slot for join request
 
               create_message(JOIN_REQ);
               dwt_writetxdata((sizeof(message_header_t)+sizeof(join_req_payload_t)+2), join_req_msg, 0); /* Zero offset in TX buffer. See Note 5 below.*/
@@ -553,7 +599,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
               
               tx_timer_period = 65;
               xSemaphoreGive(xSendMsgSemaphore);
-              printf("Network join request initiated for SEAT %d.\r\n", seat_num);
+              printf("Network join request initiated for SEAT %d.\r\n", local_seat_num);
             }
           }
         }
@@ -564,7 +610,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       }
       break;
     case (JOIN_REQ):
-      if (seat_num == 0)
+      if (local_seat_num == 0)
       {
         rx_join_req_payload = (join_req_payload_t *)rx_payload;
         uint32 inverted_map = ~seat_map;
@@ -582,7 +628,7 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
           in_network_devices[rx_seat_num].dev_addr[0] = tx_dest_addr[0];
           in_network_devices[rx_seat_num].dev_addr[1] = tx_dest_addr[1];
           in_network_devices[rx_seat_num].seat_num = rx_seat_num;
-          in_network_devices[rx_seat_num].timeout_ctr = out_of_range_ctr;
+          in_network_devices[rx_seat_num].timeout_ctr = OUT_OF_RANGE_LIMIT;
           tx_timer_period = 10;
           xSemaphoreGive(xSendMsgSemaphore);
         }
@@ -593,12 +639,12 @@ void process_rx_buffer(uint8 *rx_buf, uint16 rx_data_len)
       }
       break;
     case (JOIN_CONF):
-      if ((rx_header->dest_addr[0]==src_addr[0]) && (rx_header->dest_addr[1]==src_addr[1]))
+      if ((rx_header->dest_addr[0]==local_dev_addr[0]) && (rx_header->dest_addr[1]==local_dev_addr[1]))
       {
         rx_join_conf_payload = (join_conf_payload_t *)rx_payload;
-        seat_num = rx_join_conf_payload->seat_num;
+        local_seat_num = rx_join_conf_payload->seat_num;
         joined = TRUE;
-        printf("Joined network successfully at SEAT %d\r\n", seat_num);\
+        printf("Joined network successfully at SEAT %d\r\n", local_seat_num);\
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
       }
       else
@@ -620,7 +666,7 @@ void create_message(message_type_t msg_type)
     frame_seq_nb,
     panid[0], panid[1],
     0, 0, // these destination address fields will be set below
-    src_addr[0], src_addr[1],
+    local_dev_addr[0], local_dev_addr[1],
     (uint8)msg_type
   };
 
@@ -634,7 +680,7 @@ void create_message(message_type_t msg_type)
         session_id,
         cluster_flag,
         superframe_num,
-        seat_num,
+        local_seat_num,
         seat_map,
         0, 0, 0, 0, //rx timestamp
         0, 0, 0, 0, //tx timestamp
@@ -652,7 +698,7 @@ void create_message(message_type_t msg_type)
     case (JOIN_REQ):
       tx_msg_hdr.dest_addr[0] = init_addr[0]; //this is the initiators address right now but it shouldn't make a difference
       tx_msg_hdr.dest_addr[1] = init_addr[1];
-      join_req_payload_t join_req_payload = {seat_num};
+      join_req_payload_t join_req_payload = {local_seat_num};
       
       memcpy(join_req_msg, &tx_msg_hdr, sizeof(message_header_t));
       memcpy(join_req_msg + sizeof(message_header_t), &join_req_payload, sizeof(join_req_payload_t));
@@ -694,9 +740,6 @@ void send_timed_message(void * pvParameter)
 
         /* Clear TXFRS event. */
         dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
-
-        /* Increment frame sequence number after transmission of the poll message (modulo 256). */
-        frame_seq_nb++;
       }
       else
       {
@@ -732,9 +775,6 @@ void send_message(uint8* out_message, uint8 message_size)
 
     /* Clear TXFRS event. */
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS);
-
-    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
-    frame_seq_nb++;
   }
   else
   {
